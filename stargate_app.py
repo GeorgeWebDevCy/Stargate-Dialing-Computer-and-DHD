@@ -678,6 +678,57 @@ class StargateApp:
         except pygame.error:
             return pygame.font.Font(None, 24).render("?", True, color)
 
+    def _truncate_text(self, font: pygame.font.Font, text: str, max_width: int) -> str:
+        if max_width <= 0:
+            return ""
+        if font.size(text)[0] <= max_width:
+            return text
+        suffix = "..."
+        shortened = text
+        while shortened and font.size(shortened + suffix)[0] > max_width:
+            shortened = shortened[:-1]
+        return (shortened + suffix) if shortened else suffix
+
+    def _wrap_text(
+        self,
+        font: pygame.font.Font,
+        text: str,
+        max_width: int,
+        max_lines: int,
+    ) -> List[str]:
+        if max_lines <= 0:
+            return []
+        words = text.split()
+        if not words:
+            return [""]
+
+        raw_lines: List[str] = []
+        current = ""
+        for word in words:
+            candidate = word if not current else f"{current} {word}"
+            if font.size(candidate)[0] <= max_width:
+                current = candidate
+                continue
+
+            if current:
+                raw_lines.append(current)
+            else:
+                raw_lines.append(self._truncate_text(font, word, max_width))
+                current = ""
+                continue
+            current = word
+
+        if current:
+            raw_lines.append(current)
+
+        if len(raw_lines) <= max_lines:
+            return raw_lines
+
+        visible = raw_lines[:max_lines]
+        tail = " ".join([visible[-1]] + raw_lines[max_lines:])
+        visible[-1] = self._truncate_text(font, tail, max_width)
+        return visible
+
     def _ensure_gate_glyph_font(self, pixel_size: int) -> None:
         pixel_size = max(12, pixel_size)
         if pixel_size == self._gate_glyph_font_size:
@@ -788,9 +839,16 @@ class StargateApp:
 
     def _build_buttons(self) -> None:
         gap = 10
-        top_y = self.panel_rect.top + 82
         preset_w = int((self.panel_rect.width - gap * 5) / 4)
         preset_h = 42
+        dhd_top = self.dhd.center[1] - self.dhd.outer_radius
+        max_top = dhd_top - preset_h - 12
+        preferred_top = int(self.panel_rect.top + self.panel_rect.height * 0.26)
+        min_top = self.panel_rect.top + 140
+        if max_top < min_top:
+            top_y = max(self.panel_rect.top + 96, max_top)
+        else:
+            top_y = max(min_top, min(preferred_top, max_top))
         self.preset_buttons = []
         x = self.panel_rect.left + gap
         for name in KNOWN_ADDRESSES:
@@ -1272,57 +1330,79 @@ class StargateApp:
         self.screen.blit(gloss, (0, 0))
 
         pad_x = panel_rect.left + 26
+        panel_right = panel_rect.right - 26
+        content_w = panel_right - pad_x
+        preset_top = self.preset_buttons[0].rect.top if self.preset_buttons else panel_rect.bottom
+        dhd_top = self.dhd.center[1] - self.dhd.outer_radius
+        info_bottom = min(preset_top - 10, dhd_top - 12)
+
         title_y = panel_rect.top + 18
         title = self.font_lg.render("STARGATE COMMAND", True, (215, 227, 245))
         subtitle = self.font_sm.render("Dialing Computer + DHD", True, (148, 170, 198))
         self.screen.blit(title, (pad_x, title_y))
         self.screen.blit(subtitle, (pad_x + 2, title_y + 40))
 
-        self.screen.blit(
-            self.font_md.render("Address Glyphs:", True, (255, 208, 148)),
-            (pad_x, panel_rect.top + 96),
-        )
+        y = title_y + 72
+        if y < info_bottom:
+            self.screen.blit(
+                self.font_md.render("Address Glyphs:", True, (255, 208, 148)),
+                (pad_x, y),
+            )
+            y += self.font_md.get_height() + 2
+
         glyph_string = "".join(self.glyph_chars[i] for i in self.entered_symbols)
-        if glyph_string:
-            glyph_surface = self._render_text_safe(
-                self.glyph_font_lg,
-                glyph_string,
-                (255, 222, 183),
-                fallback_text=" ".join(f"{i + 1:02d}" for i in self.entered_symbols),
-                fallback_font=self.font_md,
-            )
-            self.screen.blit(glyph_surface, (pad_x + 258, panel_rect.top + 88))
-        else:
-            self.screen.blit(
-                self.font_sm.render("<empty>", True, (166, 185, 206)),
-                (pad_x + 258, panel_rect.top + 108),
-            )
+        if y < info_bottom:
+            if glyph_string:
+                glyph_surface = self._render_text_safe(
+                    self.glyph_font_md,
+                    glyph_string,
+                    (255, 222, 183),
+                    fallback_text=" ".join(f"{i + 1:02d}" for i in self.entered_symbols),
+                    fallback_font=self.font_md,
+                )
+                if glyph_surface.get_width() > content_w:
+                    glyph_fallback = self._truncate_text(
+                        self.font_md,
+                        " ".join(f"{i + 1:02d}" for i in self.entered_symbols),
+                        content_w,
+                    )
+                    glyph_surface = self.font_md.render(glyph_fallback, True, (255, 222, 183))
+                self.screen.blit(glyph_surface, (pad_x, y))
+                y += glyph_surface.get_height() + 6
+            else:
+                empty_surface = self.font_sm.render("<empty>", True, (166, 185, 206))
+                self.screen.blit(empty_surface, (pad_x, y + 2))
+                y += empty_surface.get_height() + 6
 
-        index_text = " ".join(f"{i + 1:02d}" for i in self.entered_symbols)
-        if not index_text:
-            index_text = "-"
-        self.screen.blit(
-            self.font_sm.render(f"Symbol indexes: {index_text}", True, (166, 185, 206)),
-            (pad_x, panel_rect.top + 130),
+        index_text = " ".join(f"{i + 1:02d}" for i in self.entered_symbols) or "-"
+        index_line = self._truncate_text(self.font_sm, f"Symbol indexes: {index_text}", content_w)
+        if y < info_bottom:
+            self.screen.blit(
+                self.font_sm.render(index_line, True, (166, 185, 206)),
+                (pad_x, y),
+            )
+            y += self.font_sm.get_height() + 4
+
+        status_lines = self._wrap_text(
+            self.font_sm,
+            f"Status: {self.status}",
+            content_w,
+            max_lines=2,
         )
+        for line in status_lines:
+            if y + self.font_sm.get_height() > info_bottom:
+                break
+            self.screen.blit(self.font_sm.render(line, True, (170, 190, 214)), (pad_x, y))
+            y += self.font_sm.get_height() + 2
 
-        status_surface = self.font_sm.render(f"Status: {self.status}", True, (170, 190, 214))
-        self.screen.blit(status_surface, (pad_x, panel_rect.top + 156))
-
-        if self.hovered_symbol is not None:
-            hover_char = self.glyph_chars[self.hovered_symbol]
-            hover_label = self._render_text_safe(
-                self.glyph_font_md,
-                hover_char,
-                (248, 205, 147),
-                fallback_text=f"{self.hovered_symbol + 1:02d}",
-                fallback_font=self.font_md,
+        if self.hovered_symbol is not None and y + self.font_sm.get_height() <= info_bottom:
+            hover_line = self._truncate_text(
+                self.font_sm,
+                f"Hovered symbol: {self.hovered_symbol + 1:02d}",
+                content_w,
             )
-            self.screen.blit(
-                self.font_sm.render("Hovered symbol:", True, (170, 190, 214)),
-                (panel_rect.right - 220, panel_rect.top + 156),
-            )
-            self.screen.blit(hover_label, (panel_rect.right - 66, panel_rect.top + 145))
+            self.screen.blit(self.font_sm.render(hover_line, True, (248, 205, 147)), (pad_x, y))
+            y += self.font_sm.get_height() + 2
 
         for btn in self.preset_buttons:
             self._draw_pill(btn, (43, 72, 106), (214, 233, 255), hover=btn.rect.collidepoint(pygame.mouse.get_pos()))
@@ -1355,11 +1435,17 @@ class StargateApp:
             "1-9: quick symbols 01..09",
             "Enter: DIAL | Backspace: BACK | Delete: CLEAR | Esc: CLOSE",
         ]
-        y = self.controls[0].rect.top - 78 if self.controls else panel_rect.bottom - 100
+        hint_line_h = self.font_sm.get_height() + 2
+        hints_total_h = len(hints) * hint_line_h
+        hint_bottom = self.controls[0].rect.top - 8 if self.controls else panel_rect.bottom - 8
+        y = max(info_bottom + 8, hint_bottom - hints_total_h)
         for line in hints:
-            text = self.font_sm.render(line, True, (145, 164, 188))
+            if y + hint_line_h > hint_bottom:
+                break
+            line_text = self._truncate_text(self.font_sm, line, content_w)
+            text = self.font_sm.render(line_text, True, (145, 164, 188))
             self.screen.blit(text, (pad_x, y))
-            y += 22
+            y += hint_line_h
 
     def _draw_pill(
         self,
