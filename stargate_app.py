@@ -566,6 +566,8 @@ class StargateApp:
         self.font_lg = pygame.font.SysFont("segoe ui", 40, bold=True)
         self.glyph_font_lg = pygame.font.SysFont("consolas", 46, bold=True)
         self.glyph_font_md = pygame.font.SysFont("consolas", 32, bold=True)
+        self.gate_glyph_font = pygame.font.SysFont("consolas", 20, bold=True)
+        self._gate_glyph_font_size = 20
         self.glyph_chars = ASCII_GLYPH_CHARS
         glyph_font_path = self._find_glyph_font_path()
         if glyph_font_path:
@@ -659,6 +661,31 @@ class StargateApp:
             return fallback_font.render(fallback_text or "?", True, color)
         except pygame.error:
             return pygame.font.Font(None, 24).render("?", True, color)
+
+    def _ensure_gate_glyph_font(self, pixel_size: int) -> None:
+        pixel_size = max(12, pixel_size)
+        if pixel_size == self._gate_glyph_font_size:
+            return
+        font_path = self._find_glyph_font_path()
+        if font_path:
+            try:
+                self.gate_glyph_font = pygame.font.Font(str(font_path), pixel_size)
+                self._gate_glyph_font_size = pixel_size
+                return
+            except pygame.error:
+                pass
+        self.gate_glyph_font = pygame.font.SysFont("consolas", pixel_size, bold=True)
+        self._gate_glyph_font_size = pixel_size
+
+    def _gate_symbol_stage(self, symbol_index: int) -> str:
+        if symbol_index in self.current_address[: self.locked_count]:
+            return "locked"
+        if self.state == "DIALING" and self.locked_count < len(self.current_address):
+            if symbol_index == self.current_address[self.locked_count]:
+                return "active"
+        if symbol_index in self.entered_symbols:
+            return "selected"
+        return "idle"
 
     def _rebuild_layout(self) -> None:
         width, height = self.screen.get_size()
