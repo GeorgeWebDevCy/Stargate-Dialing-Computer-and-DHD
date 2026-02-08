@@ -1002,43 +1002,59 @@ class StargateApp:
 
         # Ground shadow under the gate to anchor it in space.
         shadow = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-        shadow_rect = pygame.Rect(0, 0, int(outer_radius * 2.1), int(outer_radius * 0.54))
-        shadow_rect.center = (center[0], int(center[1] + outer_radius * 0.96))
+        shadow_rect = pygame.Rect(0, 0, int(outer_radius * 2.2), int(outer_radius * 0.55))
+        shadow_rect.center = (center[0], int(center[1] + outer_radius * 1.02))
         pygame.draw.ellipse(shadow, (0, 0, 0, 125), shadow_rect)
-        pygame.draw.ellipse(shadow, (16, 30, 46, 65), shadow_rect.inflate(-18, -8))
+        pygame.draw.ellipse(shadow, (14, 26, 40, 68), shadow_rect.inflate(-24, -10))
         self.screen.blit(shadow, (0, 0))
 
-        # Back thickness ring (slightly offset down/right) for extrusion illusion.
-        thickness_offset = (int(outer_radius * 0.035), int(outer_radius * 0.045))
-        back_center = (center[0] + thickness_offset[0], center[1] + thickness_offset[1])
-        pygame.draw.circle(self.screen, (38, 42, 49), back_center, outer_radius)
-        pygame.draw.circle(self.screen, (18, 22, 28), back_center, outer_radius - 20)
+        # Render gate to local layer, then apply perspective compression for pseudo-3D.
+        pad = outer_radius + 70
+        layer_size = pad * 2
+        gate_layer = pygame.Surface((layer_size, layer_size), pygame.SRCALPHA)
+        local_center = (pad, pad)
 
-        # Main face.
-        pygame.draw.circle(self.screen, (122, 128, 138), center, outer_radius)
-        pygame.draw.circle(self.screen, (74, 81, 91), center, outer_radius - 16)
-        pygame.draw.circle(self.screen, (142, 148, 158), center, ring_radius + 14, 24)
-        pygame.draw.circle(self.screen, (25, 33, 43), center, inner_radius)
+        pygame.draw.circle(gate_layer, (122, 128, 138), local_center, outer_radius)
+        pygame.draw.circle(gate_layer, (74, 81, 91), local_center, outer_radius - 16)
+        pygame.draw.circle(gate_layer, (142, 148, 158), local_center, ring_radius + 14, 24)
+        pygame.draw.circle(gate_layer, (25, 33, 43), local_center, inner_radius)
 
         # Metallic bevel highlights and shadows.
-        bevel = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-        outer_highlight = pygame.Rect(center[0] - outer_radius, center[1] - outer_radius, outer_radius * 2, outer_radius * 2)
-        pygame.draw.arc(bevel, (236, 242, 255, 80), outer_highlight, math.radians(210), math.radians(330), 6)
-        pygame.draw.arc(bevel, (10, 14, 20, 120), outer_highlight, math.radians(30), math.radians(140), 10)
-        ring_rect = pygame.Rect(center[0] - ring_radius, center[1] - ring_radius, ring_radius * 2, ring_radius * 2)
-        pygame.draw.arc(bevel, (225, 234, 248, 70), ring_rect, math.radians(195), math.radians(315), 4)
-        pygame.draw.arc(bevel, (5, 9, 15, 130), ring_rect, math.radians(8), math.radians(132), 6)
-        self.screen.blit(bevel, (0, 0))
+        outer_highlight = pygame.Rect(
+            local_center[0] - outer_radius,
+            local_center[1] - outer_radius,
+            outer_radius * 2,
+            outer_radius * 2,
+        )
+        pygame.draw.arc(gate_layer, (236, 242, 255, 80), outer_highlight, math.radians(210), math.radians(330), 6)
+        pygame.draw.arc(gate_layer, (10, 14, 20, 120), outer_highlight, math.radians(30), math.radians(140), 10)
+        ring_rect = pygame.Rect(local_center[0] - ring_radius, local_center[1] - ring_radius, ring_radius * 2, ring_radius * 2)
+        pygame.draw.arc(gate_layer, (225, 234, 248, 70), ring_rect, math.radians(195), math.radians(315), 4)
+        pygame.draw.arc(gate_layer, (5, 9, 15, 130), ring_rect, math.radians(8), math.radians(132), 6)
 
-        self._draw_ring_symbols(center, ring_radius, self.ring_angle)
-        self._draw_chevrons(center, outer_radius - 20)
+        self._draw_ring_symbols(gate_layer, local_center, ring_radius, self.ring_angle, now)
+        self._draw_chevrons(gate_layer, local_center, outer_radius - 20)
 
         if self.state in {"OPENING", "CONNECTED"}:
-            self._draw_wormhole(center, inner_radius - 2, now)
+            self._draw_wormhole(gate_layer, local_center, inner_radius - 2, now)
+
+        tilt_factor = 0.84
+        tilt_size = (layer_size, max(1, int(layer_size * tilt_factor)))
+        gate_tilt = pygame.transform.smoothscale(gate_layer, tilt_size)
+
+        # Side thickness pass.
+        side = gate_tilt.copy()
+        side.fill((45, 48, 55, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        side_rect = side.get_rect(center=(center[0] + int(outer_radius * 0.06), center[1] + int(outer_radius * 0.07)))
+        self.screen.blit(side, side_rect)
+
+        gate_rect = gate_tilt.get_rect(center=center)
+        self.screen.blit(gate_tilt, gate_rect)
 
     def _draw_ring_symbols(
-        self, center: Tuple[int, int], radius: int, extra_angle: float
+        self, target: pygame.Surface, center: Tuple[int, int], radius: int, extra_angle: float, now: float
     ) -> None:
+        self._ensure_gate_glyph_font(int(radius * 0.11))
         cx, cy = center
         for i in range(SYMBOL_COUNT):
             base = i * (360.0 / SYMBOL_COUNT) + extra_angle
@@ -1046,11 +1062,44 @@ class StargateApp:
             x = cx + math.cos(rad) * radius
             y = cy + math.sin(rad) * radius
             px, py = int(x), int(y)
-            pygame.draw.circle(self.screen, (18, 22, 28), (px + 1, py + 2), 5)
-            pygame.draw.circle(self.screen, (185, 194, 210), (px, py), 4)
-            pygame.draw.circle(self.screen, (240, 247, 255), (px - 1, py - 1), 2)
 
-    def _draw_chevrons(self, center: Tuple[int, int], radius: int) -> None:
+            stage = self._gate_symbol_stage(i)
+            if stage == "locked":
+                col = (255, 176, 92)
+            elif stage == "active":
+                pulse = 0.5 + 0.5 * math.sin(now * 10.0)
+                col = (int(190 + 65 * pulse), int(220 + 25 * pulse), 255)
+            elif stage == "selected":
+                col = (170, 205, 244)
+            else:
+                col = (170, 178, 191)
+
+            glyph_char = self.glyph_chars[i] if i < len(self.glyph_chars) else "?"
+            text_surface = self._render_text_safe(
+                self.gate_glyph_font,
+                glyph_char,
+                col,
+                fallback_text=f"{i + 1:02d}",
+                fallback_font=self.font_sm,
+            )
+            shadow_surface = self._render_text_safe(
+                self.gate_glyph_font,
+                glyph_char,
+                (8, 10, 14),
+                fallback_text=f"{i + 1:02d}",
+                fallback_font=self.font_sm,
+            )
+            rect = text_surface.get_rect(center=(px, py))
+            target.blit(shadow_surface, rect.move(1, 2))
+            target.blit(text_surface, rect)
+
+            if stage in {"locked", "active"}:
+                glow = pygame.Surface((24, 24), pygame.SRCALPHA)
+                glow_alpha = 80 if stage == "locked" else 130
+                pygame.draw.circle(glow, (255, 196, 126, glow_alpha), (12, 12), 10)
+                target.blit(glow, (px - 12, py - 12))
+
+    def _draw_chevrons(self, target: pygame.Surface, center: Tuple[int, int], radius: int) -> None:
         cx, cy = center
         chevron_count = 9
         for i in range(chevron_count):
@@ -1068,18 +1117,18 @@ class StargateApp:
             ]
             # Cast shadow on gate rim.
             shadow_points = [(px + 2, py + 3) for px, py in points]
-            pygame.draw.polygon(self.screen, (12, 10, 8), shadow_points)
-            pygame.draw.polygon(self.screen, color, points)
-            pygame.draw.polygon(self.screen, (36, 29, 18), points, 2)
+            pygame.draw.polygon(target, (12, 10, 8), shadow_points)
+            pygame.draw.polygon(target, color, points)
+            pygame.draw.polygon(target, (36, 29, 18), points, 2)
             if lit:
                 inner = [
                     (int(x), int(y - 9)),
                     (int(x - 9), int(y + 8)),
                     (int(x + 9), int(y + 8)),
                 ]
-                pygame.draw.polygon(self.screen, (255, 205, 132), inner)
+                pygame.draw.polygon(target, (255, 205, 132), inner)
 
-    def _draw_wormhole(self, center: Tuple[int, int], radius: int, now: float) -> None:
+    def _draw_wormhole(self, target: pygame.Surface, center: Tuple[int, int], radius: int, now: float) -> None:
         cx, cy = center
         for layer in range(11):
             phase = now * 2.3 + layer * 0.8
@@ -1091,18 +1140,18 @@ class StargateApp:
                 min(255, 160 + layer * 10),
             )
             if r > 1:
-                pygame.draw.circle(self.screen, color, (cx, cy), int(r))
+                pygame.draw.circle(target, color, (cx, cy), int(r))
 
         for i in range(42):
             a = i * (2 * math.pi / 42) + now * 0.85
             dist = (radius - 30) * (0.35 + 0.65 * ((i % 5) / 4))
             x = cx + math.cos(a) * dist
             y = cy + math.sin(a) * dist
-            pygame.draw.circle(self.screen, (195, 236, 255), (int(x), int(y)), 2)
+            pygame.draw.circle(target, (195, 236, 255), (int(x), int(y)), 2)
 
         # Specular ripple and core to avoid flat disk look.
-        pygame.draw.circle(self.screen, (114, 205, 255), (cx - int(radius * 0.18), cy - int(radius * 0.22)), int(radius * 0.24), 2)
-        pygame.draw.circle(self.screen, (210, 244, 255), (cx, cy), int(radius * 0.08))
+        pygame.draw.circle(target, (114, 205, 255), (cx - int(radius * 0.18), cy - int(radius * 0.22)), int(radius * 0.24), 2)
+        pygame.draw.circle(target, (210, 244, 255), (cx, cy), int(radius * 0.08))
 
     def _draw_console(self, now: float) -> None:
         panel_rect = self.panel_rect
