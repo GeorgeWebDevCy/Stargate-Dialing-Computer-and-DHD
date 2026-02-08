@@ -416,14 +416,18 @@ class DHDWheel:
         assert self.image_surface is not None
         assert self.image_rect is not None
 
-        shadow = pygame.Surface((self.image_rect.width + 26, self.image_rect.height + 26), pygame.SRCALPHA)
-        pygame.draw.circle(
-            shadow,
-            (0, 0, 0, 130),
-            (shadow.get_width() // 2, shadow.get_height() // 2),
-            self.outer_radius + 6,
-        )
-        surface.blit(shadow, shadow.get_rect(center=(self.center[0] + 6, self.center[1] + 8)))
+        # Grounding shadow and pedestal for depth.
+        shadow = pygame.Surface((self.image_rect.width + 40, self.image_rect.height + 40), pygame.SRCALPHA)
+        ellipse_rect = pygame.Rect(0, 0, int(self.outer_radius * 2.1), int(self.outer_radius * 0.48))
+        ellipse_rect.center = (shadow.get_width() // 2, int(shadow.get_height() * 0.72))
+        pygame.draw.ellipse(shadow, (0, 0, 0, 130), ellipse_rect)
+        pygame.draw.ellipse(shadow, (14, 26, 38, 70), ellipse_rect.inflate(-24, -10))
+        surface.blit(shadow, shadow.get_rect(center=(self.center[0] + 10, self.center[1] + int(self.outer_radius * 0.66))))
+
+        # Back thickness/rim.
+        pygame.draw.circle(surface, (62, 66, 72), (self.center[0] + 5, self.center[1] + 6), self.outer_radius + 8)
+        pygame.draw.circle(surface, (34, 37, 42), (self.center[0] + 5, self.center[1] + 6), self.outer_radius - 8)
+
         surface.blit(self.image_surface, self.image_rect)
 
         overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
@@ -447,6 +451,22 @@ class DHDWheel:
             center_color = (68, 207, 255, 170)
         pygame.draw.circle(overlay, center_color, self.center, self.center_button_radius - 6)
 
+        # Top-left highlight / bottom-right shade to fake curved dome lighting.
+        pygame.draw.circle(
+            overlay,
+            (255, 255, 255, 52),
+            (self.center[0] - int(self.outer_radius * 0.26), self.center[1] - int(self.outer_radius * 0.22)),
+            int(self.outer_radius * 0.58),
+            0,
+        )
+        pygame.draw.circle(
+            overlay,
+            (0, 0, 0, 66),
+            (self.center[0] + int(self.outer_radius * 0.20), self.center[1] + int(self.outer_radius * 0.26)),
+            int(self.outer_radius * 0.74),
+            0,
+        )
+
         surface.blit(overlay, (0, 0))
 
     def _draw_procedural_style(
@@ -458,8 +478,14 @@ class DHDWheel:
         connected: bool,
     ) -> None:
         cx, cy = self.center
+        floor_shadow = pygame.Rect(0, 0, int(self.outer_radius * 2.1), int(self.outer_radius * 0.48))
+        floor_shadow.center = (cx + 8, cy + int(self.outer_radius * 0.65))
+        pygame.draw.ellipse(surface, (0, 0, 0), floor_shadow)
+        pygame.draw.ellipse(surface, (20, 32, 44), floor_shadow.inflate(-18, -8))
+
+        pygame.draw.circle(surface, (48, 52, 58), (cx + 5, cy + 6), self.outer_radius + 11)
         pygame.draw.circle(surface, (36, 40, 46), self.center, self.outer_radius + 9)
-        pygame.draw.circle(surface, (168, 172, 177), self.center, self.outer_radius + 2)
+        pygame.draw.circle(surface, (172, 176, 182), self.center, self.outer_radius + 2)
         pygame.draw.circle(surface, (80, 86, 94), self.center, self.outer_radius + 2, 4)
 
         for sector in self.sectors:
@@ -492,6 +518,12 @@ class DHDWheel:
         pygame.draw.circle(surface, (255, 171, 86), self.center, glow_radius)
         pygame.draw.circle(surface, center_color, self.center, self.center_button_radius)
         pygame.draw.circle(surface, (85, 48, 24), self.center, self.center_button_radius, 3)
+        pygame.draw.circle(
+            surface,
+            (255, 227, 188),
+            (cx - int(self.center_button_radius * 0.26), cy - int(self.center_button_radius * 0.24)),
+            int(self.center_button_radius * 0.28),
+        )
 
     def _sector_polygon(self, sector: DHDSector, pad: int = 0) -> List[Tuple[int, int]]:
         start = sector.start_angle
@@ -883,24 +915,48 @@ class StargateApp:
         self._draw_console(now)
 
     def _draw_background(self, now: float) -> None:
-        h = WINDOW_SIZE[1]
+        width, height = self.screen.get_size()
+        h = height
         for y in range(h):
             blend = y / h
-            r = int(7 + 24 * blend)
-            g = int(10 + 21 * blend)
-            b = int(26 + 33 * blend)
-            pygame.draw.line(self.screen, (r, g, b), (0, y), (WINDOW_SIZE[0], y))
+            r = int(6 + 18 * blend)
+            g = int(10 + 19 * blend)
+            b = int(26 + 26 * blend)
+            pygame.draw.line(self.screen, (r, g, b), (0, y), (width, y))
 
-        nebula = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
-        for cx, cy, radius, phase in ((280, 180, 270, 0.7), (560, 680, 350, 1.2), (1240, 180, 260, 0.4)):
+        nebula = pygame.Surface((width, height), pygame.SRCALPHA)
+        for cx, cy, radius, phase in (
+            (int(width * 0.16), int(height * 0.18), int(height * 0.30), 0.7),
+            (int(width * 0.40), int(height * 0.74), int(height * 0.38), 1.2),
+            (int(width * 0.84), int(height * 0.18), int(height * 0.29), 0.4),
+        ):
             glow = 30 + int(18 * (1 + math.sin(now + phase)))
             pygame.draw.circle(nebula, (26, 62, 112, glow), (cx, cy), radius)
         self.screen.blit(nebula, (0, 0))
 
+        # Perspective floor plane for depth.
+        floor = pygame.Surface((width, height), pygame.SRCALPHA)
+        horizon_y = int(height * 0.62)
+        floor_poly = [(0, height), (width, height), (int(width * 0.58), horizon_y), (int(width * 0.08), horizon_y)]
+        pygame.draw.polygon(floor, (8, 14, 24, 122), floor_poly)
+        for i in range(11):
+            t = (i + 1) / 12.0
+            y = int(horizon_y + (height - horizon_y) * (t * t))
+            alpha = int(22 + 48 * (1.0 - t))
+            pygame.draw.line(floor, (44, 74, 106, alpha), (0, y), (width, y), 1)
+        vanishing_x = int(width * 0.33)
+        for i in range(-6, 7):
+            px = int(vanishing_x + i * width * 0.09)
+            pygame.draw.line(floor, (36, 62, 92, 34), (px, height), (vanishing_x, horizon_y), 1)
+        self.screen.blit(floor, (0, 0))
+
         for x, y, size, phase in self.stars:
             twinkle = 130 + int(120 * (0.5 + 0.5 * math.sin(now * 1.4 + phase)))
             color = (twinkle, twinkle, 255)
-            pygame.draw.circle(self.screen, color, (x, y), size)
+            # Subtle horizontal drift gives parallax feeling.
+            px = int((x + now * (2 + size * 0.9) + phase * 8) % width)
+            py = y if y < int(height * 0.66) else int(height * 0.66 + (y % max(1, int(height * 0.34))))
+            pygame.draw.circle(self.screen, color, (px, py), size)
 
     def _draw_stargate(self, now: float) -> None:
         center = self.gate_center
@@ -917,10 +973,35 @@ class StargateApp:
         pygame.draw.rect(self.screen, (16, 21, 29), frame_rect, border_radius=16)
         pygame.draw.rect(self.screen, (44, 56, 72), frame_rect, width=2, border_radius=16)
 
-        pygame.draw.circle(self.screen, (112, 118, 128), center, outer_radius)
-        pygame.draw.circle(self.screen, (67, 73, 82), center, outer_radius - 16)
-        pygame.draw.circle(self.screen, (135, 142, 152), center, ring_radius + 14, 24)
-        pygame.draw.circle(self.screen, (27, 34, 43), center, inner_radius)
+        # Ground shadow under the gate to anchor it in space.
+        shadow = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        shadow_rect = pygame.Rect(0, 0, int(outer_radius * 2.1), int(outer_radius * 0.54))
+        shadow_rect.center = (center[0], int(center[1] + outer_radius * 0.96))
+        pygame.draw.ellipse(shadow, (0, 0, 0, 125), shadow_rect)
+        pygame.draw.ellipse(shadow, (16, 30, 46, 65), shadow_rect.inflate(-18, -8))
+        self.screen.blit(shadow, (0, 0))
+
+        # Back thickness ring (slightly offset down/right) for extrusion illusion.
+        thickness_offset = (int(outer_radius * 0.035), int(outer_radius * 0.045))
+        back_center = (center[0] + thickness_offset[0], center[1] + thickness_offset[1])
+        pygame.draw.circle(self.screen, (38, 42, 49), back_center, outer_radius)
+        pygame.draw.circle(self.screen, (18, 22, 28), back_center, outer_radius - 20)
+
+        # Main face.
+        pygame.draw.circle(self.screen, (122, 128, 138), center, outer_radius)
+        pygame.draw.circle(self.screen, (74, 81, 91), center, outer_radius - 16)
+        pygame.draw.circle(self.screen, (142, 148, 158), center, ring_radius + 14, 24)
+        pygame.draw.circle(self.screen, (25, 33, 43), center, inner_radius)
+
+        # Metallic bevel highlights and shadows.
+        bevel = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        outer_highlight = pygame.Rect(center[0] - outer_radius, center[1] - outer_radius, outer_radius * 2, outer_radius * 2)
+        pygame.draw.arc(bevel, (236, 242, 255, 80), outer_highlight, math.radians(210), math.radians(330), 6)
+        pygame.draw.arc(bevel, (10, 14, 20, 120), outer_highlight, math.radians(30), math.radians(140), 10)
+        ring_rect = pygame.Rect(center[0] - ring_radius, center[1] - ring_radius, ring_radius * 2, ring_radius * 2)
+        pygame.draw.arc(bevel, (225, 234, 248, 70), ring_rect, math.radians(195), math.radians(315), 4)
+        pygame.draw.arc(bevel, (5, 9, 15, 130), ring_rect, math.radians(8), math.radians(132), 6)
+        self.screen.blit(bevel, (0, 0))
 
         self._draw_ring_symbols(center, ring_radius, self.ring_angle)
         self._draw_chevrons(center, outer_radius - 20)
@@ -937,7 +1018,10 @@ class StargateApp:
             rad = math.radians(base)
             x = cx + math.cos(rad) * radius
             y = cy + math.sin(rad) * radius
-            pygame.draw.circle(self.screen, (174, 183, 198), (int(x), int(y)), 4)
+            px, py = int(x), int(y)
+            pygame.draw.circle(self.screen, (18, 22, 28), (px + 1, py + 2), 5)
+            pygame.draw.circle(self.screen, (185, 194, 210), (px, py), 4)
+            pygame.draw.circle(self.screen, (240, 247, 255), (px - 1, py - 1), 2)
 
     def _draw_chevrons(self, center: Tuple[int, int], radius: int) -> None:
         cx, cy = center
@@ -955,8 +1039,18 @@ class StargateApp:
                 (int(x - 14), int(y + 12)),
                 (int(x + 14), int(y + 12)),
             ]
+            # Cast shadow on gate rim.
+            shadow_points = [(px + 2, py + 3) for px, py in points]
+            pygame.draw.polygon(self.screen, (12, 10, 8), shadow_points)
             pygame.draw.polygon(self.screen, color, points)
             pygame.draw.polygon(self.screen, (36, 29, 18), points, 2)
+            if lit:
+                inner = [
+                    (int(x), int(y - 9)),
+                    (int(x - 9), int(y + 8)),
+                    (int(x + 9), int(y + 8)),
+                ]
+                pygame.draw.polygon(self.screen, (255, 205, 132), inner)
 
     def _draw_wormhole(self, center: Tuple[int, int], radius: int, now: float) -> None:
         cx, cy = center
@@ -964,7 +1058,11 @@ class StargateApp:
             phase = now * 2.3 + layer * 0.8
             warp = math.sin(phase) * 8.0
             r = radius - layer * 14 + warp
-            color = (24 + layer * 7, 99 + layer * 11, 160 + layer * 10)
+            color = (
+                min(255, 24 + layer * 7),
+                min(255, 99 + layer * 11),
+                min(255, 160 + layer * 10),
+            )
             if r > 1:
                 pygame.draw.circle(self.screen, color, (cx, cy), int(r))
 
@@ -975,10 +1073,28 @@ class StargateApp:
             y = cy + math.sin(a) * dist
             pygame.draw.circle(self.screen, (195, 236, 255), (int(x), int(y)), 2)
 
+        # Specular ripple and core to avoid flat disk look.
+        pygame.draw.circle(self.screen, (114, 205, 255), (cx - int(radius * 0.18), cy - int(radius * 0.22)), int(radius * 0.24), 2)
+        pygame.draw.circle(self.screen, (210, 244, 255), (cx, cy), int(radius * 0.08))
+
     def _draw_console(self, now: float) -> None:
         panel_rect = self.panel_rect
+        panel_shadow = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        pygame.draw.rect(
+            panel_shadow,
+            (0, 0, 0, 140),
+            panel_rect.move(7, 8),
+            border_radius=20,
+        )
+        self.screen.blit(panel_shadow, (0, 0))
         pygame.draw.rect(self.screen, (13, 17, 23), panel_rect, border_radius=18)
         pygame.draw.rect(self.screen, (43, 56, 74), panel_rect, width=2, border_radius=18)
+        pygame.draw.rect(self.screen, (20, 27, 35), panel_rect.inflate(-8, -8), border_radius=16)
+        gloss = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        gloss_rect = panel_rect.inflate(-16, -20)
+        pygame.draw.rect(gloss, (255, 255, 255, 18), gloss_rect, border_radius=14)
+        pygame.draw.rect(gloss, (0, 0, 0, 40), gloss_rect.move(0, 16), border_radius=14)
+        self.screen.blit(gloss, (0, 0))
 
         pad_x = panel_rect.left + 26
         title_y = panel_rect.top + 18
@@ -1078,7 +1194,12 @@ class StargateApp:
         hover: bool,
     ) -> None:
         border = (29, 34, 41) if not hover else (250, 198, 128)
+        pygame.draw.rect(self.screen, (10, 12, 16), btn.rect.move(2, 2), border_radius=12)
         pygame.draw.rect(self.screen, fill, btn.rect, border_radius=12)
+        gloss = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        top_gloss = pygame.Rect(btn.rect.left + 2, btn.rect.top + 2, btn.rect.width - 4, max(8, btn.rect.height // 3))
+        pygame.draw.rect(gloss, (255, 255, 255, 26), top_gloss, border_radius=10)
+        self.screen.blit(gloss, (0, 0))
         pygame.draw.rect(self.screen, border, btn.rect, width=2, border_radius=12)
         label = self.font_sm.render(btn.label, True, text_color)
         self.screen.blit(label, label.get_rect(center=btn.rect.center))
