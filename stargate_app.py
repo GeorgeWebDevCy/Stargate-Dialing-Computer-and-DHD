@@ -28,7 +28,7 @@ SYMBOL_ARC_DEG = 360.0 / SYMBOL_COUNT
 TOP_CHEVRON_ANGLE_DEG = -90.0
 DIAL_SPIN_BASE_SPEED = 220.0
 DIAL_SPIN_SPEED_STEP = 14.0
-DIAL_MIN_TRAVEL_DEG = 95.0
+DIAL_MIN_TRAVEL_DEG = 360.0
 CHEVRON_ACTUATE_MS = 380
 
 
@@ -710,11 +710,13 @@ class StargateApp:
         direction = 1.0 if self.dial_step_index % 2 == 0 else -1.0
 
         if direction > 0:
-            while desired_angle - self.ring_angle < DIAL_MIN_TRAVEL_DEG:
-                desired_angle += 360.0
+            cw_delta = (desired_angle - self.ring_angle) % 360.0
+            travel = cw_delta + DIAL_MIN_TRAVEL_DEG
+            desired_angle = self.ring_angle + travel
         else:
-            while desired_angle - self.ring_angle > -DIAL_MIN_TRAVEL_DEG:
-                desired_angle -= 360.0
+            ccw_delta = (self.ring_angle - desired_angle) % 360.0
+            travel = ccw_delta + DIAL_MIN_TRAVEL_DEG
+            desired_angle = self.ring_angle - travel
 
         self.ring_target_angle = desired_angle
         self.ring_speed = DIAL_SPIN_BASE_SPEED + min(110.0, self.dial_step_index * DIAL_SPIN_SPEED_STEP)
