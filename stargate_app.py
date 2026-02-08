@@ -26,10 +26,11 @@ MIN_ADDRESS_LENGTH = 7
 MAX_ADDRESS_LENGTH = 9
 SYMBOL_ARC_DEG = 360.0 / SYMBOL_COUNT
 TOP_CHEVRON_ANGLE_DEG = -90.0
-DIAL_SPIN_BASE_SPEED = 220.0
-DIAL_SPIN_SPEED_STEP = 14.0
+DIAL_SPIN_BASE_SPEED = 90.0
+DIAL_SPIN_SPEED_STEP = 6.0
 DIAL_MIN_TRAVEL_DEG = 360.0
 CHEVRON_ACTUATE_MS = 380
+NEXT_SYMBOL_DELAY_MS = 2000
 
 
 KNOWN_ADDRESSES: Dict[str, List[int]] = {
@@ -608,10 +609,11 @@ class StargateApp:
         self.ring_angle = 0.0
         self.ring_target_angle = 0.0
         self.ring_speed = 0.0
-        self.dial_phase = "IDLE"  # IDLE, SPINNING, CHEVRON_ACTUATE
+        self.dial_phase = "IDLE"  # IDLE, SPINNING, CHEVRON_ACTUATE, WAIT_NEXT
         self.dial_step_index = 0
         self.chevron_phase_started_at = 0
         self.top_chevron_anim_until = 0
+        self.next_symbol_start_at = 0
         self.open_finish_at = 0
         self.connected_since = 0
 
@@ -940,6 +942,7 @@ class StargateApp:
         self.dial_phase = "IDLE"
         self.chevron_phase_started_at = 0
         self.top_chevron_anim_until = 0
+        self.next_symbol_start_at = 0
         self.status = "Dialing sequence started."
         self.audio.play("engage")
         self.audio.start_loop("ring")
@@ -961,6 +964,7 @@ class StargateApp:
         self.dial_phase = "IDLE"
         self.dial_step_index = 0
         self.top_chevron_anim_until = 0
+        self.next_symbol_start_at = 0
         self.status = "Gate closed."
         self.audio.play("close")
         self.logger.info("Gate closed")
@@ -987,12 +991,16 @@ class StargateApp:
                     if self.locked_count >= len(self.current_address):
                         self._finish_dialing(now)
                     else:
+                        self.dial_phase = "WAIT_NEXT"
+                        self.next_symbol_start_at = now + NEXT_SYMBOL_DELAY_MS
                         self.status = (
                             f"Chevron {self.locked_count} locked "
-                            f"of {len(self.current_address)}."
+                            f"of {len(self.current_address)}. Holding..."
                         )
-                        self.dial_step_index += 1
-                        self._begin_next_dial_step()
+            elif self.dial_phase == "WAIT_NEXT":
+                if now >= self.next_symbol_start_at:
+                    self.dial_step_index += 1
+                    self._begin_next_dial_step()
         elif self.state == "OPENING":
             if now >= self.open_finish_at:
                 self.state = "CONNECTED"
