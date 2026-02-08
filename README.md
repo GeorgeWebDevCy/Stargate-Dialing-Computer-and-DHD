@@ -73,6 +73,8 @@ powershell -ExecutionPolicy Bypass -File .\build_installer.ps1
 3. Output:
 
 - `installer/output/StargateDialer-Setup-<version>.exe`
+- Optional version override:
+  - `powershell -ExecutionPolicy Bypass -File .\build_installer.ps1 -AppVersion 1.0.0`
 
 ## Controls
 

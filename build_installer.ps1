@@ -1,5 +1,6 @@
 param(
-    [switch]$SkipExeBuild
+    [switch]$SkipExeBuild,
+    [string]$AppVersion = '1.0.0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,7 +37,10 @@ Write-Host 'Building installer...'
 
 Push-Location (Join-Path $projectRoot 'installer')
 try {
-    & $isccPath 'StargateDialer.iss'
+    & $isccPath "/DAppVersion=$AppVersion" 'StargateDialer.iss'
+    if ($LASTEXITCODE -ne 0) {
+        throw "ISCC failed with exit code $LASTEXITCODE"
+    }
 } finally {
     Pop-Location
 }

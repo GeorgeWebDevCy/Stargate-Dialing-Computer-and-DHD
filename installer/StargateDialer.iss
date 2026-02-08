@@ -1,5 +1,4 @@
-#define AppVersion GetStringFileVersion(AddBackslash(SourcePath) + "..\\dist\\StargateDialer.exe")
-#if AppVersion == ""
+#ifndef AppVersion
   #define AppVersion "1.0.0"
 #endif
 
