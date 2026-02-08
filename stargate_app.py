@@ -27,6 +27,7 @@ MAX_ADDRESS_LENGTH = 9
 PANEL_WIDTH_RATIO = 0.31
 PANEL_WIDTH_MIN = 430
 PANEL_WIDTH_MAX = 560
+MAX_WORMHOLE_DURATION_SECONDS = 38 * 60
 SYMBOL_ARC_DEG = 360.0 / SYMBOL_COUNT
 TOP_CHEVRON_ANGLE_DEG = -90.0
 DIAL_SPIN_BASE_SPEED = 90.0
@@ -1073,7 +1074,19 @@ class StargateApp:
                 self.logger.info("Wormhole connected")
         elif self.state == "CONNECTED":
             active_seconds = (now - self.connected_since) / 1000.0
-            self.status = f"Wormhole active for {active_seconds:04.1f}s."
+            remaining_seconds = MAX_WORMHOLE_DURATION_SECONDS - active_seconds
+            if remaining_seconds <= 0:
+                self._close_gate()
+                self.status = "Wormhole auto-closed at 38-minute safety limit."
+                self.logger.info(
+                    "Wormhole auto-closed at limit",
+                    limit_seconds=MAX_WORMHOLE_DURATION_SECONDS,
+                )
+            else:
+                self.status = (
+                    f"Wormhole active for {active_seconds:04.1f}s. "
+                    f"Auto-close in {int(remaining_seconds)}s."
+                )
 
     def _draw(self) -> None:
         now = pygame.time.get_ticks() / 1000.0
