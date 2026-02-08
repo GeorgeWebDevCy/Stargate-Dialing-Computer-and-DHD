@@ -24,6 +24,9 @@ FPS = 60
 SYMBOL_COUNT = 39
 MIN_ADDRESS_LENGTH = 7
 MAX_ADDRESS_LENGTH = 9
+PANEL_WIDTH_RATIO = 0.31
+PANEL_WIDTH_MIN = 430
+PANEL_WIDTH_MAX = 560
 SYMBOL_ARC_DEG = 360.0 / SYMBOL_COUNT
 TOP_CHEVRON_ANGLE_DEG = -90.0
 DIAL_SPIN_BASE_SPEED = 90.0
@@ -743,11 +746,13 @@ class StargateApp:
 
     def _rebuild_layout(self) -> None:
         width, height = self.screen.get_size()
-        margin = max(18, int(min(width, height) * 0.018))
+        margin = max(14, int(min(width, height) * 0.016))
 
-        right_width = int(width * 0.35)
-        right_width = max(460, min(640, right_width))
-        right_width = min(right_width, width - margin * 3 - 300)
+        right_width = int(width * PANEL_WIDTH_RATIO)
+        if width < 1280:
+            right_width = int(width * 0.34)
+        right_width = max(PANEL_WIDTH_MIN, min(PANEL_WIDTH_MAX, right_width))
+        right_width = min(right_width, width - margin * 3 - 380)
 
         self.panel_rect = pygame.Rect(
             width - right_width - margin,
@@ -763,20 +768,20 @@ class StargateApp:
             height - margin * 2,
         )
 
-        gate_outer = int(min(self.left_view_rect.width * 0.45, self.left_view_rect.height * 0.41))
+        gate_outer = int(min(self.left_view_rect.width * 0.50, self.left_view_rect.height * 0.47))
         gate_outer = max(170, gate_outer)
         self.gate_center = (
             self.left_view_rect.centerx,
-            int(self.left_view_rect.centery + self.left_view_rect.height * 0.03),
+            int(self.left_view_rect.centery - self.left_view_rect.height * 0.04),
         )
         self.gate_outer_radius = gate_outer
         self.gate_ring_radius = int(gate_outer * 0.83)
         self.gate_inner_radius = int(gate_outer * 0.64)
 
-        dhd_radius = int(min(self.panel_rect.width * 0.40, self.panel_rect.height * 0.29))
+        dhd_radius = int(min(self.panel_rect.width * 0.36, self.panel_rect.height * 0.25))
         dhd_center = (
             self.panel_rect.centerx,
-            int(self.panel_rect.top + self.panel_rect.height * 0.55),
+            int(self.panel_rect.top + self.panel_rect.height * 0.60),
         )
         self.dhd.set_geometry(dhd_center, dhd_radius)
         self._build_buttons()
