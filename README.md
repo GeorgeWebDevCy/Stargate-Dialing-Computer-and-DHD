@@ -4,6 +4,7 @@ A desktop Stargate SG-1 style dialing simulator built with Python + `pygame`.
 
 It includes:
 - Stargate render with rotating ring and chevron lock animation
+- Responsive, realistic UI layout with corrected gate/DHD proportions
 - Stylized DHD console with circular symbol interaction
 - Original-style DHD symbol wheel art (`assets/dhd_original.png`)
 - SG-1 glyph font support for address display
@@ -11,6 +12,7 @@ It includes:
 - Preset addresses (Abydos, Chulak, Dakara, Earth)
 - Wormhole open/active/close state simulation
 - Sound loading from `assets/sounds` (with generated fallback if files are missing)
+- Built-in file logging for diagnostics and crash tracing
 
 ## Quick start
 
@@ -94,5 +96,13 @@ powershell -ExecutionPolicy Bypass -File .\build_installer.ps1
 - This is a fan-made simulator and not affiliated with MGM or the Stargate IP owners.
 - Asset source details are in `assets/ATTRIBUTION.md`.
 - Replace files in `assets/sounds/` to use your preferred sound pack:
-  - `press`, `lock`, `error`, `close`, `kawoosh` names are auto-mapped.
+  - `press`, `engage`, `ring`, `lock`, `error`, `close`, `kawoosh`, `connected` are auto-mapped.
 - SG-1 glyph font is loaded from `assets/fonts/sg1-glyphs.ttf` when present.
+
+## Logging
+
+- Runtime logs are written to:
+  - source run: `logs/stargate_app_YYYYMMDD_HHMMSS.log`
+  - EXE run: `<exe-folder>/logs/stargate_app_YYYYMMDD_HHMMSS.log`
+- Unhandled exceptions and frame failures are captured with traceback data.
+- Log includes startup details and actual sound-file mapping used at runtime.

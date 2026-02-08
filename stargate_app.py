@@ -9,8 +9,10 @@ from __future__ import annotations
 import math
 import random
 import sys
+import traceback
 from array import array
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -81,11 +83,83 @@ def _asset_dir() -> Path:
     return script_dir / "assets"
 
 
+def _runtime_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+class AppLogger:
+    """Simple file logger for app diagnostics and crash investigation."""
+
+    def __init__(self, runtime_dir: Path) -> None:
+        self.log_dir = runtime_dir / "logs"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_path = self.log_dir / f"stargate_app_{stamp}.log"
+        self.max_bytes = 2_000_000
+        self._write("INFO", "Logger initialized", {"log_path": str(self.log_path)})
+        self.install_excepthook()
+
+    def install_excepthook(self) -> None:
+        old_hook = sys.excepthook
+
+        def _hook(exc_type, exc_value, exc_tb):  # type: ignore[no-untyped-def]
+            details = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+            self._write("CRITICAL", "Unhandled exception", {"traceback": details.strip()})
+            old_hook(exc_type, exc_value, exc_tb)
+
+        sys.excepthook = _hook
+
+    def _rollover_if_needed(self) -> None:
+        if not self.log_path.exists():
+            return
+        if self.log_path.stat().st_size < self.max_bytes:
+            return
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_path = self.log_dir / f"stargate_app_{stamp}.log"
+
+    def _write(self, level: str, message: str, details: Optional[Dict[str, str]] = None) -> None:
+        self._rollover_if_needed()
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"{ts} [{level}] {message}"
+        if details:
+            safe_details = {k: str(v).replace("\n", "\\n") for k, v in details.items()}
+            joined = " | ".join(f"{k}={v}" for k, v in safe_details.items())
+            line = f"{line} | {joined}"
+        try:
+            with self.log_path.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+
+    def info(self, message: str, **details: object) -> None:
+        self._write("INFO", message, {k: str(v) for k, v in details.items()})
+
+    def warning(self, message: str, **details: object) -> None:
+        self._write("WARN", message, {k: str(v) for k, v in details.items()})
+
+    def error(self, message: str, **details: object) -> None:
+        self._write("ERROR", message, {k: str(v) for k, v in details.items()})
+
+    def exception(self, message: str, exc: BaseException) -> None:
+        tb = traceback.format_exc().strip()
+        self._write(
+            "ERROR",
+            message,
+            {
+                "exception": repr(exc),
+                "traceback": tb,
+            },
+        )
+
+
 class GateAudio:
     def __init__(self, assets: Path) -> None:
         self.enabled = False
         self.sounds: Dict[str, pygame.mixer.Sound] = {}
         self.loop_channel: Optional[pygame.mixer.Channel] = None
+        self.loaded_from: Dict[str, str] = {}
 
         try:
             pygame.mixer.pre_init(44100, -16, 1, 512)
@@ -120,6 +194,7 @@ class GateAudio:
                 if path.exists():
                     try:
                         self.sounds[key] = pygame.mixer.Sound(str(path))
+                        self.loaded_from[key] = str(path.name)
                         break
                     except pygame.error:
                         continue
@@ -127,20 +202,28 @@ class GateAudio:
         # Synth fallback so app still works without external assets.
         if "press" not in self.sounds:
             self.sounds["press"] = self._tone(630, 0.06, 0.18)
+            self.loaded_from["press"] = "synth_tone"
         if "engage" not in self.sounds:
             self.sounds["engage"] = self._tone(400, 0.20, 0.22)
+            self.loaded_from["engage"] = "synth_tone"
         if "ring" not in self.sounds:
             self.sounds["ring"] = self._tone(300, 0.25, 0.08)
+            self.loaded_from["ring"] = "synth_tone"
         if "lock" not in self.sounds:
             self.sounds["lock"] = self._tone(520, 0.15, 0.23)
+            self.loaded_from["lock"] = "synth_tone"
         if "error" not in self.sounds:
             self.sounds["error"] = self._tone(220, 0.20, 0.22)
+            self.loaded_from["error"] = "synth_tone"
         if "close" not in self.sounds:
             self.sounds["close"] = self._tone(170, 0.32, 0.22)
+            self.loaded_from["close"] = "synth_tone"
         if "kawoosh" not in self.sounds:
             self.sounds["kawoosh"] = self._sweep(170, 900, 0.9, 0.28)
+            self.loaded_from["kawoosh"] = "synth_sweep"
         if "connected" not in self.sounds:
             self.sounds["connected"] = self._tone(760, 0.22, 0.20)
+            self.loaded_from["connected"] = "synth_tone"
 
         volumes = {
             "press": 0.58,
@@ -212,10 +295,12 @@ class DHDWheel:
         self.inner_ring_inner = 120
         self.center_button_radius = 84
 
-        self.sectors = self._build_sectors()
+        self.sectors: List[DHDSector] = []
+        self.reference_source: Optional[pygame.Surface] = None
         self.image_surface: Optional[pygame.Surface] = None
         self.image_rect: Optional[pygame.Rect] = None
         self._load_reference_image(assets)
+        self.set_geometry(center, 280)
 
     def _load_reference_image(self, assets: Path) -> None:
         filenames = ["dhd_original.png", "dhd_symbols.png", "dhd_reference.png"]
@@ -227,10 +312,28 @@ class DHDWheel:
                 source = pygame.image.load(str(path)).convert_alpha()
             except pygame.error:
                 continue
-            size = self.outer_radius * 2 + 14
-            self.image_surface = pygame.transform.smoothscale(source, (size, size))
-            self.image_rect = self.image_surface.get_rect(center=self.center)
+            self.reference_source = source
+            self._rescale_reference_image()
             return
+
+    def _rescale_reference_image(self) -> None:
+        if not self.reference_source:
+            self.image_surface = None
+            self.image_rect = None
+            return
+        size = self.outer_radius * 2 + 14
+        self.image_surface = pygame.transform.smoothscale(self.reference_source, (size, size))
+        self.image_rect = self.image_surface.get_rect(center=self.center)
+
+    def set_geometry(self, center: Tuple[int, int], outer_radius: int) -> None:
+        self.center = center
+        self.outer_radius = max(170, outer_radius)
+        self.outer_ring_inner = int(self.outer_radius * 0.69)
+        self.inner_ring_outer = int(self.outer_radius * 0.64)
+        self.inner_ring_inner = int(self.outer_radius * 0.43)
+        self.center_button_radius = int(self.outer_radius * 0.30)
+        self.sectors = self._build_sectors()
+        self._rescale_reference_image()
 
     def _build_sectors(self) -> List[DHDSector]:
         sectors: List[DHDSector] = []
@@ -418,10 +521,11 @@ class DHDWheel:
 
 class StargateApp:
     def __init__(self) -> None:
+        self.logger = AppLogger(_runtime_dir())
         pygame.init()
         self.assets = _asset_dir()
 
-        self.screen = pygame.display.set_mode(WINDOW_SIZE)
+        self.screen = pygame.display.set_mode(WINDOW_SIZE, pygame.RESIZABLE)
         pygame.display.set_caption("Stargate Dialing Computer + DHD")
         self.clock = pygame.time.Clock()
 
@@ -445,7 +549,13 @@ class StargateApp:
 
         self.controls: List[Button] = []
         self.preset_buttons: List[Button] = []
-        self._build_buttons()
+        self.panel_rect = pygame.Rect(0, 0, 0, 0)
+        self.left_view_rect = pygame.Rect(0, 0, 0, 0)
+        self.gate_center = (380, 470)
+        self.gate_outer_radius = 305
+        self.gate_ring_radius = 253
+        self.gate_inner_radius = 195
+        self._rebuild_layout()
 
         self.running = True
         self.status = "Idle. Enter 7-9 symbols and press the DHD center."
@@ -470,6 +580,22 @@ class StargateApp:
             )
             for _ in range(180)
         ]
+        self.logger.info(
+            "Application initialized",
+            assets=str(self.assets),
+            window=f"{self.screen.get_width()}x{self.screen.get_height()}",
+            logs=str(self.logger.log_path),
+        )
+        self.logger.info(
+            "Audio mapping",
+            press=self.audio.loaded_from.get("press", "missing"),
+            engage=self.audio.loaded_from.get("engage", "missing"),
+            ring=self.audio.loaded_from.get("ring", "missing"),
+            lock=self.audio.loaded_from.get("lock", "missing"),
+            kawoosh=self.audio.loaded_from.get("kawoosh", "missing"),
+            close=self.audio.loaded_from.get("close", "missing"),
+            connected=self.audio.loaded_from.get("connected", "missing"),
+        )
 
     def _find_glyph_font_path(self) -> Optional[Path]:
         candidates = [
@@ -502,28 +628,95 @@ class StargateApp:
         except pygame.error:
             return pygame.font.Font(None, 24).render("?", True, color)
 
-    def _build_buttons(self) -> None:
-        start_x = 770
-        start_y = 72
-        for name in KNOWN_ADDRESSES:
-            rect = pygame.Rect(start_x, start_y, 155, 42)
-            self.preset_buttons.append(Button(rect=rect, label=name, action="preset", payload=name))
-            start_x += 165
+    def _rebuild_layout(self) -> None:
+        width, height = self.screen.get_size()
+        margin = max(18, int(min(width, height) * 0.018))
 
+        right_width = int(width * 0.35)
+        right_width = max(460, min(640, right_width))
+        right_width = min(right_width, width - margin * 3 - 300)
+
+        self.panel_rect = pygame.Rect(
+            width - right_width - margin,
+            margin,
+            right_width,
+            height - margin * 2,
+        )
+
+        self.left_view_rect = pygame.Rect(
+            margin,
+            margin,
+            self.panel_rect.left - margin * 2,
+            height - margin * 2,
+        )
+
+        gate_outer = int(min(self.left_view_rect.width * 0.45, self.left_view_rect.height * 0.41))
+        gate_outer = max(170, gate_outer)
+        self.gate_center = (
+            self.left_view_rect.centerx,
+            int(self.left_view_rect.centery + self.left_view_rect.height * 0.03),
+        )
+        self.gate_outer_radius = gate_outer
+        self.gate_ring_radius = int(gate_outer * 0.83)
+        self.gate_inner_radius = int(gate_outer * 0.64)
+
+        dhd_radius = int(min(self.panel_rect.width * 0.40, self.panel_rect.height * 0.29))
+        dhd_center = (
+            self.panel_rect.centerx,
+            int(self.panel_rect.top + self.panel_rect.height * 0.55),
+        )
+        self.dhd.set_geometry(dhd_center, dhd_radius)
+        self._build_buttons()
+
+    def _build_buttons(self) -> None:
+        gap = 10
+        top_y = self.panel_rect.top + 82
+        preset_w = int((self.panel_rect.width - gap * 5) / 4)
+        preset_h = 42
+        self.preset_buttons = []
+        x = self.panel_rect.left + gap
+        for name in KNOWN_ADDRESSES:
+            rect = pygame.Rect(x, top_y, preset_w, preset_h)
+            self.preset_buttons.append(Button(rect=rect, label=name, action="preset", payload=name))
+            x += preset_w + gap
+
+        control_h = 46
+        control_gap = 10
+        small_w = int((self.panel_rect.width - control_gap * 5 - 170) / 3)
+        bottom_y = self.panel_rect.bottom - control_h - 14
+        x = self.panel_rect.left + control_gap
         self.controls = [
-            Button(rect=pygame.Rect(830, 825, 130, 44), label="BACK", action="back"),
-            Button(rect=pygame.Rect(970, 825, 130, 44), label="CLEAR", action="clear"),
-            Button(rect=pygame.Rect(1110, 825, 130, 44), label="DIAL", action="dial"),
-            Button(rect=pygame.Rect(1250, 825, 170, 44), label="CLOSE GATE", action="close"),
+            Button(rect=pygame.Rect(x, bottom_y, small_w, control_h), label="BACK", action="back"),
+            Button(
+                rect=pygame.Rect(x + small_w + control_gap, bottom_y, small_w, control_h),
+                label="CLEAR",
+                action="clear",
+            ),
+            Button(
+                rect=pygame.Rect(x + (small_w + control_gap) * 2, bottom_y, small_w, control_h),
+                label="DIAL",
+                action="dial",
+            ),
+            Button(
+                rect=pygame.Rect(self.panel_rect.right - 170 - control_gap, bottom_y, 170, control_h),
+                label="CLOSE GATE",
+                action="close",
+            ),
         ]
 
     def run(self) -> None:
         while self.running:
-            dt = self.clock.tick(FPS) / 1000.0
-            self._handle_events()
-            self._update(dt)
-            self._draw()
-            pygame.display.flip()
+            try:
+                dt = self.clock.tick(FPS) / 1000.0
+                self._handle_events()
+                self._update(dt)
+                self._draw()
+                pygame.display.flip()
+            except Exception as exc:
+                self.logger.exception("Frame execution failed", exc)
+                self.status = f"Runtime error logged: {exc.__class__.__name__}"
+                self.running = False
+        self.logger.info("Application shutting down")
         self.audio.stop_loop()
         pygame.quit()
 
@@ -531,6 +724,10 @@ class StargateApp:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
+            elif event.type == pygame.VIDEORESIZE:
+                self.screen = pygame.display.set_mode(event.size, pygame.RESIZABLE)
+                self._rebuild_layout()
+                self.logger.info("Window resized", width=event.w, height=event.h)
             elif event.type == pygame.MOUSEMOTION:
                 self._handle_hover(event.pos)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -615,6 +812,7 @@ class StargateApp:
         self.entered_symbols = KNOWN_ADDRESSES[name].copy()
         self.audio.play("press")
         self.status = f"Loaded preset: {name}."
+        self.logger.info("Preset loaded", preset=name, symbols=len(self.entered_symbols))
 
     def _start_dial(self) -> None:
         if self.state != "IDLE":
@@ -631,6 +829,7 @@ class StargateApp:
         self.status = "Dialing sequence started."
         self.audio.play("engage")
         self.audio.start_loop("ring")
+        self.logger.info("Dialing started", length=len(self.current_address), address=self.current_address)
 
     def _close_gate(self) -> None:
         if self.state == "IDLE":
@@ -644,6 +843,7 @@ class StargateApp:
         self.ring_angle = 0.0
         self.status = "Gate closed."
         self.audio.play("close")
+        self.logger.info("Gate closed")
 
     def _update(self, dt: float) -> None:
         now = pygame.time.get_ticks()
@@ -658,6 +858,7 @@ class StargateApp:
                     self.status = "Chevron lock complete. Opening wormhole..."
                     self.audio.stop_loop()
                     self.audio.play("kawoosh")
+                    self.logger.info("Dialing complete, opening wormhole")
                 else:
                     self.next_lock_at = now + 550
                     self.status = (
@@ -670,6 +871,7 @@ class StargateApp:
                 self.connected_since = now
                 self.status = "Wormhole established. Gate is active."
                 self.audio.play("connected")
+                self.logger.info("Wormhole connected")
         elif self.state == "CONNECTED":
             active_seconds = (now - self.connected_since) / 1000.0
             self.status = f"Wormhole active for {active_seconds:04.1f}s."
@@ -701,10 +903,19 @@ class StargateApp:
             pygame.draw.circle(self.screen, color, (x, y), size)
 
     def _draw_stargate(self, now: float) -> None:
-        center = (380, 470)
-        outer_radius = 305
-        ring_radius = 253
-        inner_radius = 195
+        center = self.gate_center
+        outer_radius = self.gate_outer_radius
+        ring_radius = self.gate_ring_radius
+        inner_radius = self.gate_inner_radius
+
+        frame_rect = pygame.Rect(
+            self.left_view_rect.left + 6,
+            self.left_view_rect.top + 6,
+            self.left_view_rect.width - 12,
+            self.left_view_rect.height - 12,
+        )
+        pygame.draw.rect(self.screen, (16, 21, 29), frame_rect, border_radius=16)
+        pygame.draw.rect(self.screen, (44, 56, 72), frame_rect, width=2, border_radius=16)
 
         pygame.draw.circle(self.screen, (112, 118, 128), center, outer_radius)
         pygame.draw.circle(self.screen, (67, 73, 82), center, outer_radius - 16)
@@ -765,18 +976,20 @@ class StargateApp:
             pygame.draw.circle(self.screen, (195, 236, 255), (int(x), int(y)), 2)
 
     def _draw_console(self, now: float) -> None:
-        panel_rect = pygame.Rect(730, 24, 740, 872)
+        panel_rect = self.panel_rect
         pygame.draw.rect(self.screen, (13, 17, 23), panel_rect, border_radius=18)
         pygame.draw.rect(self.screen, (43, 56, 74), panel_rect, width=2, border_radius=18)
 
+        pad_x = panel_rect.left + 26
+        title_y = panel_rect.top + 18
         title = self.font_lg.render("STARGATE COMMAND", True, (215, 227, 245))
         subtitle = self.font_sm.render("Dialing Computer + DHD", True, (148, 170, 198))
-        self.screen.blit(title, (760, 24))
-        self.screen.blit(subtitle, (763, 64))
+        self.screen.blit(title, (pad_x, title_y))
+        self.screen.blit(subtitle, (pad_x + 2, title_y + 40))
 
         self.screen.blit(
             self.font_md.render("Address Glyphs:", True, (255, 208, 148)),
-            (760, 124),
+            (pad_x, panel_rect.top + 96),
         )
         glyph_string = "".join(self.glyph_chars[i] for i in self.entered_symbols)
         if glyph_string:
@@ -787,11 +1000,11 @@ class StargateApp:
                 fallback_text=" ".join(f"{i + 1:02d}" for i in self.entered_symbols),
                 fallback_font=self.font_md,
             )
-            self.screen.blit(glyph_surface, (1020, 115))
+            self.screen.blit(glyph_surface, (pad_x + 258, panel_rect.top + 88))
         else:
             self.screen.blit(
                 self.font_sm.render("<empty>", True, (166, 185, 206)),
-                (1020, 134),
+                (pad_x + 258, panel_rect.top + 108),
             )
 
         index_text = " ".join(f"{i + 1:02d}" for i in self.entered_symbols)
@@ -799,11 +1012,11 @@ class StargateApp:
             index_text = "-"
         self.screen.blit(
             self.font_sm.render(f"Symbol indexes: {index_text}", True, (166, 185, 206)),
-            (760, 158),
+            (pad_x, panel_rect.top + 130),
         )
 
         status_surface = self.font_sm.render(f"Status: {self.status}", True, (170, 190, 214))
-        self.screen.blit(status_surface, (760, 184))
+        self.screen.blit(status_surface, (pad_x, panel_rect.top + 156))
 
         if self.hovered_symbol is not None:
             hover_char = self.glyph_chars[self.hovered_symbol]
@@ -816,9 +1029,9 @@ class StargateApp:
             )
             self.screen.blit(
                 self.font_sm.render("Hovered symbol:", True, (170, 190, 214)),
-                (1260, 160),
+                (panel_rect.right - 220, panel_rect.top + 156),
             )
-            self.screen.blit(hover_label, (1410, 150))
+            self.screen.blit(hover_label, (panel_rect.right - 66, panel_rect.top + 145))
 
         for btn in self.preset_buttons:
             self._draw_pill(btn, (43, 72, 106), (214, 233, 255), hover=btn.rect.collidepoint(pygame.mouse.get_pos()))
@@ -851,11 +1064,11 @@ class StargateApp:
             "1-9: quick symbols 01..09",
             "Enter: DIAL | Backspace: BACK | Delete: CLEAR | Esc: CLOSE",
         ]
-        y = 768
+        y = self.controls[0].rect.top - 78 if self.controls else panel_rect.bottom - 100
         for line in hints:
             text = self.font_sm.render(line, True, (145, 164, 188))
-            self.screen.blit(text, (760, y))
-            y += 24
+            self.screen.blit(text, (pad_x, y))
+            y += 22
 
     def _draw_pill(
         self,
@@ -872,8 +1085,17 @@ class StargateApp:
 
 
 def main() -> None:
-    app = StargateApp()
-    app.run()
+    app: Optional[StargateApp] = None
+    try:
+        app = StargateApp()
+        app.run()
+    except Exception as exc:
+        if app is not None:
+            app.logger.exception("Fatal startup/runtime error", exc)
+        else:
+            fallback = AppLogger(_runtime_dir())
+            fallback.exception("Fatal error before app init", exc)
+        raise
 
 
 if __name__ == "__main__":
