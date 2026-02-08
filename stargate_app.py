@@ -31,7 +31,9 @@ KNOWN_ADDRESSES: Dict[str, List[int]] = {
     "Earth": [1, 11, 2, 19, 21, 24, 35],
 }
 
-GLYPH_CHARS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + list("abcdefghijklm")
+ASCII_GLYPH_CHARS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + list("abcdefghijklm")
+FONT_GLYPH_CHARS = [chr(0xF101 + i) for i in range(SYMBOL_COUNT)]
+GLYPH_CHARS = ASCII_GLYPH_CHARS
 
 
 @dataclass
@@ -83,6 +85,7 @@ class GateAudio:
     def __init__(self, assets: Path) -> None:
         self.enabled = False
         self.sounds: Dict[str, pygame.mixer.Sound] = {}
+        self.loop_channel: Optional[pygame.mixer.Channel] = None
 
         try:
             pygame.mixer.pre_init(44100, -16, 1, 512)
@@ -91,20 +94,24 @@ class GateAudio:
             return
 
         self.enabled = True
+        self.loop_channel = pygame.mixer.Channel(1)
         sound_dir = assets / "sounds"
         sound_map = {
             "press": [
+                "symbol_beep.mp3",
                 "dhd_press.wav",
                 "press.wav",
                 "button.wav",
-                "symbol_beep.mp3",
                 "press.mp3",
                 "press_3.mp3",
             ],
-            "lock": ["chevron_lock.wav", "lock.wav", "chev_lock.mp3", "lock.mp3", "chevron.mp3"],
+            "engage": ["symbol_engaging.mp3", "press_3.mp3", "press.mp3"],
+            "ring": ["ring.mp3", "chevron_incoming_1.mp3"],
+            "lock": ["chev_lock.mp3", "chevron_lock.wav", "lock.wav", "lock.mp3", "chevron.mp3"],
             "error": ["error.wav", "reject.wav", "ring_fail.mp3", "c7_failed.mp3"],
-            "close": ["gate_close.wav", "close.wav", "shutdown.mp3", "closeGate.mp3", "close.mp3"],
-            "kawoosh": ["kawoosh.wav", "open.wav", "kawoosh.mp3", "event_horizon.mp3", "openGate.mp3"],
+            "close": ["shutdown.mp3", "ring_stop.mp3", "gate_close.wav", "close.wav", "closeGate.mp3", "close.mp3"],
+            "kawoosh": ["kawoosh.mp3", "kawoosh.wav", "open.wav", "event_horizon.mp3", "openGate.mp3"],
+            "connected": ["sequence_complete.mp3", "event_horizon.mp3"],
         }
 
         for key, filenames in sound_map.items():
@@ -120,6 +127,10 @@ class GateAudio:
         # Synth fallback so app still works without external assets.
         if "press" not in self.sounds:
             self.sounds["press"] = self._tone(630, 0.06, 0.18)
+        if "engage" not in self.sounds:
+            self.sounds["engage"] = self._tone(400, 0.20, 0.22)
+        if "ring" not in self.sounds:
+            self.sounds["ring"] = self._tone(300, 0.25, 0.08)
         if "lock" not in self.sounds:
             self.sounds["lock"] = self._tone(520, 0.15, 0.23)
         if "error" not in self.sounds:
@@ -128,12 +139,21 @@ class GateAudio:
             self.sounds["close"] = self._tone(170, 0.32, 0.22)
         if "kawoosh" not in self.sounds:
             self.sounds["kawoosh"] = self._sweep(170, 900, 0.9, 0.28)
+        if "connected" not in self.sounds:
+            self.sounds["connected"] = self._tone(760, 0.22, 0.20)
 
+        volumes = {
+            "press": 0.58,
+            "engage": 0.74,
+            "ring": 0.16,
+            "lock": 0.76,
+            "error": 0.70,
+            "close": 0.70,
+            "kawoosh": 0.95,
+            "connected": 0.72,
+        }
         for key, snd in self.sounds.items():
-            if key == "kawoosh":
-                snd.set_volume(0.9)
-            else:
-                snd.set_volume(0.75)
+            snd.set_volume(volumes.get(key, 0.70))
 
     def _tone(self, freq: float, seconds: float, volume: float) -> pygame.mixer.Sound:
         sample_rate = 44100
@@ -166,6 +186,19 @@ class GateAudio:
         snd = self.sounds.get(name)
         if snd:
             snd.play()
+
+    def start_loop(self, name: str) -> None:
+        if not self.enabled or not self.loop_channel:
+            return
+        snd = self.sounds.get(name)
+        if not snd:
+            return
+        self.loop_channel.stop()
+        self.loop_channel.play(snd, loops=-1)
+
+    def stop_loop(self) -> None:
+        if self.loop_channel:
+            self.loop_channel.stop()
 
 
 class DHDWheel:
@@ -395,8 +428,17 @@ class StargateApp:
         self.font_sm = pygame.font.SysFont("bahnschrift", 20)
         self.font_md = pygame.font.SysFont("bahnschrift", 28, bold=True)
         self.font_lg = pygame.font.SysFont("segoe ui", 40, bold=True)
-        self.glyph_font_lg = self._load_glyph_font(46)
-        self.glyph_font_md = self._load_glyph_font(32)
+        self.glyph_font_lg = pygame.font.SysFont("consolas", 46, bold=True)
+        self.glyph_font_md = pygame.font.SysFont("consolas", 32, bold=True)
+        self.glyph_chars = ASCII_GLYPH_CHARS
+        glyph_font_path = self._find_glyph_font_path()
+        if glyph_font_path:
+            try:
+                self.glyph_font_lg = pygame.font.Font(str(glyph_font_path), 46)
+                self.glyph_font_md = pygame.font.Font(str(glyph_font_path), 32)
+                self.glyph_chars = FONT_GLYPH_CHARS
+            except pygame.error:
+                self.glyph_chars = ASCII_GLYPH_CHARS
 
         self.audio = GateAudio(self.assets)
         self.dhd = DHDWheel(center=(1110, 520), assets=self.assets, font=self.font_sm)
@@ -429,18 +471,36 @@ class StargateApp:
             for _ in range(180)
         ]
 
-    def _load_glyph_font(self, size: int) -> pygame.font.Font:
+    def _find_glyph_font_path(self) -> Optional[Path]:
         candidates = [
             self.assets / "fonts" / "sg1-glyphs.ttf",
             self.assets / "sg1-glyphs.ttf",
         ]
         for path in candidates:
             if path.exists():
-                try:
-                    return pygame.font.Font(str(path), size)
-                except pygame.error:
-                    continue
-        return pygame.font.SysFont("consolas", size, bold=True)
+                return path
+        return None
+
+    def _render_text_safe(
+        self,
+        font: pygame.font.Font,
+        text: str,
+        color: Tuple[int, int, int],
+        fallback_text: str = "?",
+        fallback_font: Optional[pygame.font.Font] = None,
+    ) -> pygame.Surface:
+        fallback_font = fallback_font or self.font_sm
+        attempt = text if text else fallback_text
+        try:
+            surface = font.render(attempt, True, color)
+            if surface.get_width() > 0:
+                return surface
+        except pygame.error:
+            pass
+        try:
+            return fallback_font.render(fallback_text or "?", True, color)
+        except pygame.error:
+            return pygame.font.Font(None, 24).render("?", True, color)
 
     def _build_buttons(self) -> None:
         start_x = 770
@@ -464,6 +524,7 @@ class StargateApp:
             self._update(dt)
             self._draw()
             pygame.display.flip()
+        self.audio.stop_loop()
         pygame.quit()
 
     def _handle_events(self) -> None:
@@ -568,12 +629,14 @@ class StargateApp:
         self.state = "DIALING"
         self.next_lock_at = pygame.time.get_ticks() + 420
         self.status = "Dialing sequence started."
-        self.audio.play("press")
+        self.audio.play("engage")
+        self.audio.start_loop("ring")
 
     def _close_gate(self) -> None:
         if self.state == "IDLE":
             self.status = "Gate already idle."
             return
+        self.audio.stop_loop()
         self.state = "IDLE"
         self.locked_count = 0
         self.current_address.clear()
@@ -593,6 +656,7 @@ class StargateApp:
                     self.state = "OPENING"
                     self.open_finish_at = now + 1100
                     self.status = "Chevron lock complete. Opening wormhole..."
+                    self.audio.stop_loop()
                     self.audio.play("kawoosh")
                 else:
                     self.next_lock_at = now + 550
@@ -605,6 +669,7 @@ class StargateApp:
                 self.state = "CONNECTED"
                 self.connected_since = now
                 self.status = "Wormhole established. Gate is active."
+                self.audio.play("connected")
         elif self.state == "CONNECTED":
             active_seconds = (now - self.connected_since) / 1000.0
             self.status = f"Wormhole active for {active_seconds:04.1f}s."
@@ -713,9 +778,15 @@ class StargateApp:
             self.font_md.render("Address Glyphs:", True, (255, 208, 148)),
             (760, 124),
         )
-        glyph_string = "".join(GLYPH_CHARS[i] for i in self.entered_symbols)
+        glyph_string = "".join(self.glyph_chars[i] for i in self.entered_symbols)
         if glyph_string:
-            glyph_surface = self.glyph_font_lg.render(glyph_string, True, (255, 222, 183))
+            glyph_surface = self._render_text_safe(
+                self.glyph_font_lg,
+                glyph_string,
+                (255, 222, 183),
+                fallback_text=" ".join(f"{i + 1:02d}" for i in self.entered_symbols),
+                fallback_font=self.font_md,
+            )
             self.screen.blit(glyph_surface, (1020, 115))
         else:
             self.screen.blit(
@@ -735,8 +806,14 @@ class StargateApp:
         self.screen.blit(status_surface, (760, 184))
 
         if self.hovered_symbol is not None:
-            hover_char = GLYPH_CHARS[self.hovered_symbol]
-            hover_label = self.glyph_font_md.render(hover_char, True, (248, 205, 147))
+            hover_char = self.glyph_chars[self.hovered_symbol]
+            hover_label = self._render_text_safe(
+                self.glyph_font_md,
+                hover_char,
+                (248, 205, 147),
+                fallback_text=f"{self.hovered_symbol + 1:02d}",
+                fallback_font=self.font_md,
+            )
             self.screen.blit(
                 self.font_sm.render("Hovered symbol:", True, (170, 190, 214)),
                 (1260, 160),
