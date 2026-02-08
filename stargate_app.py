@@ -24,6 +24,12 @@ FPS = 60
 SYMBOL_COUNT = 39
 MIN_ADDRESS_LENGTH = 7
 MAX_ADDRESS_LENGTH = 9
+SYMBOL_ARC_DEG = 360.0 / SYMBOL_COUNT
+TOP_CHEVRON_ANGLE_DEG = -90.0
+DIAL_SPIN_BASE_SPEED = 220.0
+DIAL_SPIN_SPEED_STEP = 14.0
+DIAL_MIN_TRAVEL_DEG = 95.0
+CHEVRON_ACTUATE_MS = 380
 
 
 KNOWN_ADDRESSES: Dict[str, List[int]] = {
@@ -600,7 +606,12 @@ class StargateApp:
 
         self.hovered_symbol: Optional[int] = None
         self.ring_angle = 0.0
-        self.next_lock_at = 0
+        self.ring_target_angle = 0.0
+        self.ring_speed = 0.0
+        self.dial_phase = "IDLE"  # IDLE, SPINNING, CHEVRON_ACTUATE
+        self.dial_step_index = 0
+        self.chevron_phase_started_at = 0
+        self.top_chevron_anim_until = 0
         self.open_finish_at = 0
         self.connected_since = 0
 
@@ -680,12 +691,51 @@ class StargateApp:
     def _gate_symbol_stage(self, symbol_index: int) -> str:
         if symbol_index in self.current_address[: self.locked_count]:
             return "locked"
-        if self.state == "DIALING" and self.locked_count < len(self.current_address):
-            if symbol_index == self.current_address[self.locked_count]:
+        if self.state == "DIALING" and self.dial_step_index < len(self.current_address):
+            if symbol_index == self.current_address[self.dial_step_index]:
                 return "active"
         if symbol_index in self.entered_symbols:
             return "selected"
         return "idle"
+
+    def _symbol_alignment_angle(self, symbol_index: int) -> float:
+        return TOP_CHEVRON_ANGLE_DEG - symbol_index * SYMBOL_ARC_DEG
+
+    def _begin_next_dial_step(self) -> None:
+        if self.dial_step_index >= len(self.current_address):
+            return
+
+        symbol_index = self.current_address[self.dial_step_index]
+        desired_angle = self._symbol_alignment_angle(symbol_index)
+        direction = 1.0 if self.dial_step_index % 2 == 0 else -1.0
+
+        if direction > 0:
+            while desired_angle - self.ring_angle < DIAL_MIN_TRAVEL_DEG:
+                desired_angle += 360.0
+        else:
+            while desired_angle - self.ring_angle > -DIAL_MIN_TRAVEL_DEG:
+                desired_angle -= 360.0
+
+        self.ring_target_angle = desired_angle
+        self.ring_speed = DIAL_SPIN_BASE_SPEED + min(110.0, self.dial_step_index * DIAL_SPIN_SPEED_STEP)
+        self.dial_phase = "SPINNING"
+        self.status = f"Dialing symbol {self.dial_step_index + 1}/{len(self.current_address)}..."
+        self.logger.info(
+            "Dial step started",
+            step=self.dial_step_index + 1,
+            symbol=symbol_index + 1,
+            target_angle=f"{self.ring_target_angle:.2f}",
+            direction="CW" if direction > 0 else "CCW",
+        )
+
+    def _finish_dialing(self, now: int) -> None:
+        self.state = "OPENING"
+        self.dial_phase = "IDLE"
+        self.open_finish_at = now + 1100
+        self.status = "Chevron lock complete. Opening wormhole..."
+        self.audio.stop_loop()
+        self.audio.play("kawoosh")
+        self.logger.info("Dialing complete, opening wormhole")
 
     def _rebuild_layout(self) -> None:
         width, height = self.screen.get_size()
@@ -884,11 +934,15 @@ class StargateApp:
         self.current_address = self.entered_symbols.copy()
         self.locked_count = 0
         self.state = "DIALING"
-        self.next_lock_at = pygame.time.get_ticks() + 420
+        self.dial_step_index = 0
+        self.dial_phase = "IDLE"
+        self.chevron_phase_started_at = 0
+        self.top_chevron_anim_until = 0
         self.status = "Dialing sequence started."
         self.audio.play("engage")
         self.audio.start_loop("ring")
         self.logger.info("Dialing started", length=len(self.current_address), address=self.current_address)
+        self._begin_next_dial_step()
 
     def _close_gate(self) -> None:
         if self.state == "IDLE":
@@ -900,6 +954,11 @@ class StargateApp:
         self.current_address.clear()
         self.entered_symbols.clear()
         self.ring_angle = 0.0
+        self.ring_target_angle = 0.0
+        self.ring_speed = 0.0
+        self.dial_phase = "IDLE"
+        self.dial_step_index = 0
+        self.top_chevron_anim_until = 0
         self.status = "Gate closed."
         self.audio.play("close")
         self.logger.info("Gate closed")
@@ -907,23 +966,31 @@ class StargateApp:
     def _update(self, dt: float) -> None:
         now = pygame.time.get_ticks()
         if self.state == "DIALING":
-            self.ring_angle = (self.ring_angle + 158.0 * dt) % 360.0
-            if now >= self.next_lock_at:
-                self.locked_count += 1
-                self.audio.play("lock")
-                if self.locked_count >= len(self.current_address):
-                    self.state = "OPENING"
-                    self.open_finish_at = now + 1100
-                    self.status = "Chevron lock complete. Opening wormhole..."
-                    self.audio.stop_loop()
-                    self.audio.play("kawoosh")
-                    self.logger.info("Dialing complete, opening wormhole")
+            if self.dial_phase == "SPINNING":
+                delta = self.ring_target_angle - self.ring_angle
+                max_step = self.ring_speed * dt
+                if abs(delta) <= max_step:
+                    self.ring_angle = self.ring_target_angle
+                    self.dial_phase = "CHEVRON_ACTUATE"
+                    self.chevron_phase_started_at = now
+                    self.top_chevron_anim_until = now + CHEVRON_ACTUATE_MS
+                    self.status = f"Chevron {self.locked_count + 1} encoding..."
                 else:
-                    self.next_lock_at = now + 550
-                    self.status = (
-                        f"Chevron {self.locked_count} locked "
-                        f"of {len(self.current_address)}."
-                    )
+                    self.ring_angle += max_step if delta > 0 else -max_step
+            elif self.dial_phase == "CHEVRON_ACTUATE":
+                if now >= self.top_chevron_anim_until:
+                    self.locked_count += 1
+                    self.audio.play("lock")
+                    self.logger.info("Chevron locked", count=self.locked_count, total=len(self.current_address))
+                    if self.locked_count >= len(self.current_address):
+                        self._finish_dialing(now)
+                    else:
+                        self.status = (
+                            f"Chevron {self.locked_count} locked "
+                            f"of {len(self.current_address)}."
+                        )
+                        self.dial_step_index += 1
+                        self._begin_next_dial_step()
         elif self.state == "OPENING":
             if now >= self.open_finish_at:
                 self.state = "CONNECTED"
@@ -1033,7 +1100,7 @@ class StargateApp:
         pygame.draw.arc(gate_layer, (5, 9, 15, 130), ring_rect, math.radians(8), math.radians(132), 6)
 
         self._draw_ring_symbols(gate_layer, local_center, ring_radius, self.ring_angle, now)
-        self._draw_chevrons(gate_layer, local_center, outer_radius - 20)
+        self._draw_chevrons(gate_layer, local_center, outer_radius - 20, now)
 
         if self.state in {"OPENING", "CONNECTED"}:
             self._draw_wormhole(gate_layer, local_center, inner_radius - 2, now)
@@ -1099,14 +1166,31 @@ class StargateApp:
                 pygame.draw.circle(glow, (255, 196, 126, glow_alpha), (12, 12), 10)
                 target.blit(glow, (px - 12, py - 12))
 
-    def _draw_chevrons(self, target: pygame.Surface, center: Tuple[int, int], radius: int) -> None:
+    def _draw_chevrons(self, target: pygame.Surface, center: Tuple[int, int], radius: int, now: float) -> None:
         cx, cy = center
         chevron_count = 9
+        actuate_blend = 0.0
+        if self.state == "DIALING" and self.dial_phase == "CHEVRON_ACTUATE":
+            span_ms = max(1, self.top_chevron_anim_until - self.chevron_phase_started_at)
+            t = max(
+                0.0,
+                min(1.0, ((now * 1000.0) - self.chevron_phase_started_at) / span_ms),
+            )
+            actuate_blend = 1.0 - abs(2.0 * t - 1.0)
+
         for i in range(chevron_count):
             angle = math.radians(-90 + i * (360 / chevron_count))
             x = cx + math.cos(angle) * radius
             y = cy + math.sin(angle) * radius
-            lit = i < self.locked_count
+            if i == 0 and actuate_blend > 0.0:
+                to_center_x = cx - x
+                to_center_y = cy - y
+                dist = max(1.0, math.hypot(to_center_x, to_center_y))
+                plunge = 13.0 * actuate_blend
+                x += (to_center_x / dist) * plunge
+                y += (to_center_y / dist) * plunge
+
+            lit = i < self.locked_count or (i == 0 and actuate_blend > 0.08)
             base = (112, 87, 56)
             glow = (255, 150, 50)
             color = glow if lit else base
