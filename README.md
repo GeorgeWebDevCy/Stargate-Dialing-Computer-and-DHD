@@ -4,11 +4,13 @@ A desktop Stargate SG-1 style dialing simulator built with Python + `pygame`.
 
 It includes:
 - Stargate render with rotating ring and chevron lock animation
-- DHD-style symbol keypad (`39` symbols)
+- Stylized DHD console with circular symbol interaction
+- Original-style DHD symbol wheel art (`assets/dhd_original.png`)
+- SG-1 glyph font support for address display
 - Address dialing flow (`7-9` symbols)
 - Preset addresses (Abydos, Chulak, Dakara, Earth)
 - Wormhole open/active/close state simulation
-- Generated sound effects (press, lock, kawoosh, close) with no external assets required
+- Sound loading from `assets/sounds` (with generated fallback if files are missing)
 
 ## Quick start
 
@@ -48,6 +50,7 @@ powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 Notes:
 - The build is `--windowed` (GUI app, no terminal console).
 - Default output is a single-file EXE in `dist/`.
+- Assets are bundled into the EXE via PyInstaller `--add-data`.
 - Use `-OneDir` if you want a folder build:
   - `powershell -ExecutionPolicy Bypass -File .\build_exe.ps1 -OneDir`
 
@@ -80,13 +83,16 @@ powershell -ExecutionPolicy Bypass -File .\build_installer.ps1
 
 - Mouse: click symbols and controls.
 - Keyboard:
-  - `1`..`9`: quick symbols `S01`..`S09`
+  - `1`..`9`: quick symbols `01`..`09`
   - `Enter`: dial
   - `Backspace`: remove last symbol
   - `Delete`: clear address
   - `Esc`: close gate
 
-## Notes
+## Assets and Attribution
 
 - This is a fan-made simulator and not affiliated with MGM or the Stargate IP owners.
-- Current symbols are generic (`S01`..`S39`). You can replace these with canonical glyph art/sound assets later.
+- Asset source details are in `assets/ATTRIBUTION.md`.
+- Replace files in `assets/sounds/` to use your preferred sound pack:
+  - `press`, `lock`, `error`, `close`, `kawoosh` names are auto-mapped.
+- SG-1 glyph font is loaded from `assets/fonts/sg1-glyphs.ttf` when present.

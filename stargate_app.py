@@ -31,6 +31,8 @@ KNOWN_ADDRESSES: Dict[str, List[int]] = {
     "Earth": [1, 11, 2, 19, 21, 24, 35],
 }
 
+GLYPH_CHARS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + list("abcdefghijklm")
+
 
 @dataclass
 class Button:
@@ -64,6 +66,9 @@ def _asset_dir() -> Path:
     script_dir = Path(__file__).resolve().parent
     candidates = [script_dir / "assets", Path.cwd() / "assets"]
 
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        candidates.insert(0, Path(getattr(sys, "_MEIPASS")) / "assets")
+
     if getattr(sys, "frozen", False):
         exe_assets = Path(sys.executable).resolve().parent / "assets"
         candidates.insert(0, exe_assets)
@@ -88,11 +93,18 @@ class GateAudio:
         self.enabled = True
         sound_dir = assets / "sounds"
         sound_map = {
-            "press": ["dhd_press.wav", "press.wav", "button.wav"],
-            "lock": ["chevron_lock.wav", "lock.wav"],
-            "error": ["error.wav", "reject.wav"],
-            "close": ["gate_close.wav", "close.wav"],
-            "kawoosh": ["kawoosh.wav", "open.wav"],
+            "press": [
+                "dhd_press.wav",
+                "press.wav",
+                "button.wav",
+                "symbol_beep.mp3",
+                "press.mp3",
+                "press_3.mp3",
+            ],
+            "lock": ["chevron_lock.wav", "lock.wav", "chev_lock.mp3", "lock.mp3", "chevron.mp3"],
+            "error": ["error.wav", "reject.wav", "ring_fail.mp3", "c7_failed.mp3"],
+            "close": ["gate_close.wav", "close.wav", "shutdown.mp3", "closeGate.mp3", "close.mp3"],
+            "kawoosh": ["kawoosh.wav", "open.wav", "kawoosh.mp3", "event_horizon.mp3", "openGate.mp3"],
         }
 
         for key, filenames in sound_map.items():
@@ -116,6 +128,12 @@ class GateAudio:
             self.sounds["close"] = self._tone(170, 0.32, 0.22)
         if "kawoosh" not in self.sounds:
             self.sounds["kawoosh"] = self._sweep(170, 900, 0.9, 0.28)
+
+        for key, snd in self.sounds.items():
+            if key == "kawoosh":
+                snd.set_volume(0.9)
+            else:
+                snd.set_volume(0.75)
 
     def _tone(self, freq: float, seconds: float, volume: float) -> pygame.mixer.Sound:
         sample_rate = 44100
@@ -322,7 +340,8 @@ class DHDWheel:
             pygame.draw.polygon(surface, fill, poly)
             pygame.draw.polygon(surface, (94, 100, 112), poly, 2)
 
-            label = self.font.render(f"{sector.index + 1:02d}", True, (38, 42, 48))
+            glyph = GLYPH_CHARS[sector.index] if 0 <= sector.index < len(GLYPH_CHARS) else "?"
+            label = self.font.render(glyph, True, (38, 42, 48))
             mid_angle = (sector.start_angle + ((sector.end_angle - sector.start_angle) % 360.0) * 0.5) % 360.0
             rad = math.radians(mid_angle)
             mid_radius = (sector.inner_radius + sector.outer_radius) * 0.5
@@ -376,6 +395,8 @@ class StargateApp:
         self.font_sm = pygame.font.SysFont("bahnschrift", 20)
         self.font_md = pygame.font.SysFont("bahnschrift", 28, bold=True)
         self.font_lg = pygame.font.SysFont("segoe ui", 40, bold=True)
+        self.glyph_font_lg = self._load_glyph_font(46)
+        self.glyph_font_md = self._load_glyph_font(32)
 
         self.audio = GateAudio(self.assets)
         self.dhd = DHDWheel(center=(1110, 520), assets=self.assets, font=self.font_sm)
@@ -407,6 +428,19 @@ class StargateApp:
             )
             for _ in range(180)
         ]
+
+    def _load_glyph_font(self, size: int) -> pygame.font.Font:
+        candidates = [
+            self.assets / "fonts" / "sg1-glyphs.ttf",
+            self.assets / "sg1-glyphs.ttf",
+        ]
+        for path in candidates:
+            if path.exists():
+                try:
+                    return pygame.font.Font(str(path), size)
+                except pygame.error:
+                    continue
+        return pygame.font.SysFont("consolas", size, bold=True)
 
     def _build_buttons(self) -> None:
         start_x = 770
@@ -675,14 +709,39 @@ class StargateApp:
         self.screen.blit(title, (760, 24))
         self.screen.blit(subtitle, (763, 64))
 
-        address_text = " ".join(f"{i + 1:02d}" for i in self.entered_symbols)
-        if not address_text:
-            address_text = "<empty>"
-        addr_surface = self.font_md.render(f"Address: {address_text}", True, (255, 208, 148))
-        self.screen.blit(addr_surface, (760, 124))
+        self.screen.blit(
+            self.font_md.render("Address Glyphs:", True, (255, 208, 148)),
+            (760, 124),
+        )
+        glyph_string = "".join(GLYPH_CHARS[i] for i in self.entered_symbols)
+        if glyph_string:
+            glyph_surface = self.glyph_font_lg.render(glyph_string, True, (255, 222, 183))
+            self.screen.blit(glyph_surface, (1020, 115))
+        else:
+            self.screen.blit(
+                self.font_sm.render("<empty>", True, (166, 185, 206)),
+                (1020, 134),
+            )
+
+        index_text = " ".join(f"{i + 1:02d}" for i in self.entered_symbols)
+        if not index_text:
+            index_text = "-"
+        self.screen.blit(
+            self.font_sm.render(f"Symbol indexes: {index_text}", True, (166, 185, 206)),
+            (760, 158),
+        )
 
         status_surface = self.font_sm.render(f"Status: {self.status}", True, (170, 190, 214))
-        self.screen.blit(status_surface, (760, 160))
+        self.screen.blit(status_surface, (760, 184))
+
+        if self.hovered_symbol is not None:
+            hover_char = GLYPH_CHARS[self.hovered_symbol]
+            hover_label = self.glyph_font_md.render(hover_char, True, (248, 205, 147))
+            self.screen.blit(
+                self.font_sm.render("Hovered symbol:", True, (170, 190, 214)),
+                (1260, 160),
+            )
+            self.screen.blit(hover_label, (1410, 150))
 
         for btn in self.preset_buttons:
             self._draw_pill(btn, (43, 72, 106), (214, 233, 255), hover=btn.rect.collidepoint(pygame.mouse.get_pos()))

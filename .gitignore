@@ -11,3 +11,6 @@ installer/output/
 # Virtual envs
 .venv/
 venv/
+
+# Local scratch
+.tmp_assets/
