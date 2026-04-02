@@ -185,6 +185,7 @@ class GateAudio:
 
         self.enabled = True
         self.loop_channel = pygame.mixer.Channel(1)
+        self.ambient_channel = pygame.mixer.Channel(2)
         sound_dir = assets / "sounds"
         sound_map = {
             "press": [
@@ -240,6 +241,12 @@ class GateAudio:
         if "connected" not in self.sounds:
             self.sounds["connected"] = self._tone(760, 0.22, 0.20)
             self.loaded_from["connected"] = "synth_tone"
+        # Ambient hum: two detuned sine waves that beat against each other,
+        # giving a low mechanical rumble. Always synthesised.
+        self.sounds["ambient_idle"] = self._hum(55, 58, 3.0, 0.08)
+        self.loaded_from["ambient_idle"] = "synth_hum"
+        self.sounds["ambient_active"] = self._hum(80, 84, 3.0, 0.14)
+        self.loaded_from["ambient_active"] = "synth_hum"
 
         volumes = {
             "press": 0.58,
@@ -262,6 +269,19 @@ class GateAudio:
             t = i / sample_rate
             sample = math.sin(2 * math.pi * freq * t)
             pcm.append(int(sample * 32767 * volume))
+        return pygame.mixer.Sound(buffer=pcm)
+
+    def _hum(self, freq1: float, freq2: float, seconds: float, volume: float) -> pygame.mixer.Sound:
+        """Two detuned sines layered to create a beating mechanical hum."""
+        sample_rate = 44100
+        frame_count = int(sample_rate * seconds)
+        pcm = array("h")
+        for i in range(frame_count):
+            t = i / sample_rate
+            s = math.sin(2 * math.pi * freq1 * t) + math.sin(2 * math.pi * freq2 * t)
+            # Fade in/out over first/last 0.1 s to avoid clicks when looping.
+            env = min(1.0, t / 0.1) * min(1.0, (seconds - t) / 0.1)
+            pcm.append(int(s * 0.5 * 32767 * volume * env))
         return pygame.mixer.Sound(buffer=pcm)
 
     def _sweep(
@@ -298,6 +318,18 @@ class GateAudio:
     def stop_loop(self) -> None:
         if self.loop_channel:
             self.loop_channel.stop()
+
+    def start_ambient(self, name: str) -> None:
+        if not self.enabled or not self.ambient_channel:
+            return
+        snd = self.sounds.get(name)
+        if snd:
+            self.ambient_channel.stop()
+            self.ambient_channel.play(snd, loops=-1)
+
+    def stop_ambient(self) -> None:
+        if hasattr(self, "ambient_channel") and self.ambient_channel:
+            self.ambient_channel.stop()
 
 
 class DHDWheel:
@@ -653,6 +685,7 @@ class StargateApp:
             close=self.audio.loaded_from.get("close", "missing"),
             connected=self.audio.loaded_from.get("connected", "missing"),
         )
+        self.audio.start_ambient("ambient_idle")
 
     def _find_glyph_font_path(self) -> Optional[Path]:
         candidates = [
@@ -1021,6 +1054,7 @@ class StargateApp:
         self.next_symbol_start_at = 0
         self.status = "Dialing sequence started."
         self._update_window_title()
+        self.audio.start_ambient("ambient_active")
         self.audio.play("engage")
         self.audio.start_loop("ring")
         self.logger.info("Dialing started", length=len(self.current_address), address=self.current_address)
@@ -1061,6 +1095,7 @@ class StargateApp:
         self.opening_started_at = 0
         self.status = "Gate closed."
         self._update_window_title()
+        self.audio.start_ambient("ambient_idle")
         self.audio.play("close")
         self.logger.info("Gate closed")
 
