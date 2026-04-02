@@ -6,6 +6,7 @@ Run:
 
 from __future__ import annotations
 
+import json
 import math
 import random
 import sys
@@ -14,7 +15,7 @@ from array import array
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pygame
 
@@ -118,6 +119,46 @@ def _angle_in_span(angle: float, start: float, end: float) -> bool:
     if start <= end:
         return start <= angle < end
     return angle >= start or angle < end
+
+
+DEFAULT_SETTINGS: Dict[str, Any] = {
+    "window_width": 1500,
+    "window_height": 920,
+    "volume_master": 1.0,
+    "volume_ambient": 1.0,
+    "dialing_speed_multiplier": 1.0,   # >1 = faster, <1 = slower
+    "dial_fail_chance": 0.35,
+    "idc_code": "314",
+    "screensaver_idle_seconds": 60,
+    "sound_pack_dir": "",              # empty = use assets/sounds
+}
+
+
+def load_settings(runtime_dir: Path) -> Dict[str, Any]:
+    path = runtime_dir / "settings.json"
+    settings = dict(DEFAULT_SETTINGS)
+    if path.exists():
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                overrides = json.load(f)
+            for k, v in overrides.items():
+                if k in settings:
+                    settings[k] = type(settings[k])(v)
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+    else:
+        # Write defaults so the user can see/edit them.
+        save_settings(runtime_dir, settings)
+    return settings
+
+
+def save_settings(runtime_dir: Path, settings: Dict[str, Any]) -> None:
+    path = runtime_dir / "settings.json"
+    try:
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except OSError:
+        pass
 
 
 def _asset_dir() -> Path:
@@ -640,10 +681,13 @@ class DHDWheel:
 class StargateApp:
     def __init__(self) -> None:
         self.logger = AppLogger(_runtime_dir())
+        self.settings = load_settings(_runtime_dir())
         pygame.init()
         self.assets = _asset_dir()
 
-        self.screen = pygame.display.set_mode(WINDOW_SIZE, pygame.RESIZABLE)
+        w = int(self.settings["window_width"])
+        h = int(self.settings["window_height"])
+        self.screen = pygame.display.set_mode((w, h), pygame.RESIZABLE)
         pygame.display.set_caption("Stargate Dialing Computer + DHD")
         self.clock = pygame.time.Clock()
 
@@ -707,7 +751,7 @@ class StargateApp:
         self.iris_target = 0.0
         self.idc_mode = False             # whether IDC entry dialog is active
         self.idc_entered = ""             # digits entered so far
-        self.idc_correct = "314"          # the "correct" IDC code
+        self.idc_correct = str(self.settings.get("idc_code", "314"))
         # Dial history log — each entry: {"time": str, "dest": str, "result": str, "symbols": list}
         self.dial_log: List[Dict[str, object]] = []
         self.log_scroll = 0        # topmost visible entry index
@@ -739,6 +783,15 @@ class StargateApp:
             close=self.audio.loaded_from.get("close", "missing"),
             connected=self.audio.loaded_from.get("connected", "missing"),
         )
+        # Apply volume settings.
+        vol = float(self.settings.get("volume_master", 1.0))
+        amb = float(self.settings.get("volume_ambient", 1.0))
+        for key, snd in self.audio.sounds.items():
+            base = snd.get_volume()
+            if key.startswith("ambient"):
+                snd.set_volume(min(1.0, base * vol * amb))
+            else:
+                snd.set_volume(min(1.0, base * vol))
         self.audio.start_ambient("ambient_idle")
 
     def _find_glyph_font_path(self) -> Optional[Path]:
@@ -874,7 +927,8 @@ class StargateApp:
             desired_angle = self.ring_angle - travel
 
         self.ring_target_angle = desired_angle
-        self.ring_speed = DIAL_SPIN_BASE_SPEED + min(110.0, self.dial_step_index * DIAL_SPIN_SPEED_STEP)
+        speed_mul = float(self.settings.get("dialing_speed_multiplier", 1.0))
+        self.ring_speed = (DIAL_SPIN_BASE_SPEED + min(110.0, self.dial_step_index * DIAL_SPIN_SPEED_STEP)) * speed_mul
         self.dial_phase = "SPINNING"
         self.status = f"Dialing symbol {self.dial_step_index + 1}/{len(self.current_address)}..."
         self.logger.info(
@@ -887,7 +941,8 @@ class StargateApp:
 
     def _finish_dialing(self, now: int) -> None:
         is_known = any(self.current_address == addr for addr in KNOWN_ADDRESSES.values())
-        if not is_known and random.random() < DIAL_FAIL_CHANCE:
+        fail_chance = float(self.settings.get("dial_fail_chance", DIAL_FAIL_CHANCE))
+        if not is_known and random.random() < fail_chance:
             self._fail_dial(now)
             return
         self.state = "OPENING"
@@ -1032,6 +1087,9 @@ class StargateApp:
             elif event.type == pygame.VIDEORESIZE:
                 self.screen = pygame.display.set_mode(event.size, pygame.RESIZABLE)
                 self._rebuild_layout()
+                self.settings["window_width"] = event.w
+                self.settings["window_height"] = event.h
+                save_settings(_runtime_dir(), self.settings)
                 self.logger.info("Window resized", width=event.w, height=event.h)
             elif event.type == pygame.MOUSEMOTION:
                 self._handle_hover(event.pos)
