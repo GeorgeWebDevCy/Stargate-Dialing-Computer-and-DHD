@@ -44,6 +44,11 @@ KNOWN_ADDRESSES: Dict[str, List[int]] = {
     "Earth": [1, 11, 2, 19, 21, 24, 35],
 }
 
+# Lock order for 9 chevrons (index = gate chevron position, 0 = top/12 o'clock).
+# In SG-1, chevron 7 (top, index 0) locks last for a 7-symbol address, with
+# the right/bottom/left filling in first — matching the show's dramatic finale.
+CHEVRON_LOCK_ORDER = [2, 3, 4, 5, 6, 8, 0, 1, 7]
+
 ASCII_GLYPH_CHARS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + list("abcdefghijklm")
 FONT_GLYPH_CHARS = [chr(0xF101 + i) for i in range(SYMBOL_COUNT)]
 GLYPH_CHARS = ASCII_GLYPH_CHARS
@@ -619,6 +624,7 @@ class StargateApp:
         self.top_chevron_anim_until = 0
         self.next_symbol_start_at = 0
         self.open_finish_at = 0
+        self.opening_started_at = 0
         self.connected_since = 0
 
         rng = random.Random(42)
@@ -790,7 +796,8 @@ class StargateApp:
     def _finish_dialing(self, now: int) -> None:
         self.state = "OPENING"
         self.dial_phase = "IDLE"
-        self.open_finish_at = now + 1100
+        self.open_finish_at = now + 1800
+        self.opening_started_at = now
         self.status = "Chevron lock complete. Opening wormhole..."
         self.audio.stop_loop()
         self.audio.play("kawoosh")
@@ -1029,6 +1036,7 @@ class StargateApp:
         self.dial_step_index = 0
         self.top_chevron_anim_until = 0
         self.next_symbol_start_at = 0
+        self.opening_started_at = 0
         self.status = "Gate closed."
         self.audio.play("close")
         self.logger.info("Gate closed")
@@ -1189,6 +1197,14 @@ class StargateApp:
         self._draw_chevrons(gate_layer, local_center, outer_radius - 20, now)
 
         if self.state in {"OPENING", "CONNECTED"}:
+            # Blue ambient glow around the inner opening of the gate.
+            glow_surf = pygame.Surface((layer_size, layer_size), pygame.SRCALPHA)
+            glow_pulse = 0.5 + 0.5 * math.sin(now * 2.2)
+            glow_spread = int(inner_radius * 0.14) + int(10 * glow_pulse)
+            for gl in range(glow_spread, 0, -2):
+                a = int(60 * (1.0 - gl / glow_spread) * (0.7 + 0.3 * glow_pulse))
+                pygame.draw.circle(glow_surf, (28, 108, 230, max(0, a)), local_center, inner_radius + gl, 2)
+            gate_layer.blit(glow_surf, (0, 0))
             self._draw_wormhole(gate_layer, local_center, inner_radius - 2, now)
 
         tilt_factor = 0.84
@@ -1255,73 +1271,186 @@ class StargateApp:
     def _draw_chevrons(self, target: pygame.Surface, center: Tuple[int, int], radius: int, now: float) -> None:
         cx, cy = center
         chevron_count = 9
+
         actuate_blend = 0.0
         if self.state == "DIALING" and self.dial_phase == "CHEVRON_ACTUATE":
             span_ms = max(1, self.top_chevron_anim_until - self.chevron_phase_started_at)
-            t = max(
-                0.0,
-                min(1.0, ((now * 1000.0) - self.chevron_phase_started_at) / span_ms),
-            )
+            t = max(0.0, min(1.0, (now * 1000.0 - self.chevron_phase_started_at) / span_ms))
             actuate_blend = 1.0 - abs(2.0 * t - 1.0)
+
+        # Which chevron position is currently encoding (about to lock).
+        actuating_pos = CHEVRON_LOCK_ORDER[min(self.locked_count, chevron_count - 1)]
+        locked_positions = set(CHEVRON_LOCK_ORDER[: self.locked_count])
+
+        half_w = int(radius * 0.118)   # half-width of chevron base
+        depth = int(radius * 0.160)    # how deep the tip extends toward center
 
         for i in range(chevron_count):
             angle = math.radians(-90 + i * (360 / chevron_count))
-            x = cx + math.cos(angle) * radius
-            y = cy + math.sin(angle) * radius
-            if i == 0 and actuate_blend > 0.0:
-                to_center_x = cx - x
-                to_center_y = cy - y
-                dist = max(1.0, math.hypot(to_center_x, to_center_y))
-                plunge = 13.0 * actuate_blend
-                x += (to_center_x / dist) * plunge
-                y += (to_center_y / dist) * plunge
 
-            lit = i < self.locked_count or (i == 0 and actuate_blend > 0.08)
-            base = (112, 87, 56)
-            glow = (255, 150, 50)
-            color = glow if lit else base
-            points = [
-                (int(x), int(y - 14)),
-                (int(x - 14), int(y + 12)),
-                (int(x + 14), int(y + 12)),
-            ]
-            # Cast shadow on gate rim.
-            shadow_points = [(px + 2, py + 3) for px, py in points]
-            pygame.draw.polygon(target, (12, 10, 8), shadow_points)
-            pygame.draw.polygon(target, color, points)
-            pygame.draw.polygon(target, (36, 29, 18), points, 2)
-            if lit:
-                inner = [
-                    (int(x), int(y - 9)),
-                    (int(x - 9), int(y + 8)),
-                    (int(x + 9), int(y + 8)),
-                ]
-                pygame.draw.polygon(target, (255, 205, 132), inner)
+            # Radial unit vector (outward from gate center toward chevron).
+            rdx = math.cos(angle)
+            rdy = math.sin(angle)
+            # Perpendicular / tangential unit vector.
+            pdx = -rdy
+            pdy = rdx
+
+            # Base centre of the chevron on the gate outer ring.
+            bx = cx + rdx * radius
+            by = cy + rdy * radius
+
+            # Plunge animation: the chevron that is about to lock moves inward.
+            if i == actuating_pos and actuate_blend > 0.0:
+                plunge = 15.0 * actuate_blend
+                bx -= rdx * plunge
+                by -= rdy * plunge
+
+            # Build the arrowhead polygon pointing toward gate centre.
+            tip_x = bx - rdx * depth
+            tip_y = by - rdy * depth
+            # Two base corners, slightly offset outward so the base doesn't clip the ring.
+            bl_x = bx - pdx * half_w + rdx * 5
+            bl_y = by - pdy * half_w + rdy * 5
+            br_x = bx + pdx * half_w + rdx * 5
+            br_y = by + pdy * half_w + rdy * 5
+
+            points = [(int(tip_x), int(tip_y)), (int(bl_x), int(bl_y)), (int(br_x), int(br_y))]
+
+            lit = i in locked_positions
+            is_actuating = (i == actuating_pos and actuate_blend > 0.08)
+
+            # Drop shadow.
+            shadow_pts = [(px + 2, py + 3) for px, py in points]
+            pygame.draw.polygon(target, (12, 10, 8), shadow_pts)
+
+            # Chevron body.
+            body_color = (255, 150, 46) if (lit or is_actuating) else (108, 84, 52)
+            pygame.draw.polygon(target, body_color, points)
+            pygame.draw.polygon(target, (32, 26, 16), points, 2)
+
+            if lit or is_actuating:
+                # Inner bright highlight — a smaller similar triangle.
+                inset = 0.44
+                ibl_x = tip_x + (bl_x - tip_x) * inset
+                ibl_y = tip_y + (bl_y - tip_y) * inset
+                ibr_x = tip_x + (br_x - tip_x) * inset
+                ibr_y = tip_y + (br_y - tip_y) * inset
+                inner = [(int(tip_x + rdx * (-2)), int(tip_y + rdy * (-2))), (int(ibl_x), int(ibl_y)), (int(ibr_x), int(ibr_y))]
+                pygame.draw.polygon(target, (255, 210, 130), inner)
+
+                # Glow halo.
+                glow_surf = pygame.Surface(target.get_size(), pygame.SRCALPHA)
+                glow_a = int(110 * (0.7 + 0.3 * actuate_blend)) if is_actuating else 80
+                pygame.draw.circle(glow_surf, (255, 168, 62, glow_a), (int(tip_x), int(tip_y)), half_w + 4)
+                pygame.draw.circle(glow_surf, (255, 210, 130, glow_a // 2), (int(tip_x), int(tip_y)), half_w + 10)
+                target.blit(glow_surf, (0, 0))
 
     def _draw_wormhole(self, target: pygame.Surface, center: Tuple[int, int], radius: int, now: float) -> None:
         cx, cy = center
-        for layer in range(11):
-            phase = now * 2.3 + layer * 0.8
-            warp = math.sin(phase) * 8.0
-            r = radius - layer * 14 + warp
-            color = (
-                min(255, 24 + layer * 7),
-                min(255, 99 + layer * 11),
-                min(255, 160 + layer * 10),
-            )
-            if r > 1:
-                pygame.draw.circle(target, color, (cx, cy), int(r))
 
-        for i in range(42):
-            a = i * (2 * math.pi / 42) + now * 0.85
-            dist = (radius - 30) * (0.35 + 0.65 * ((i % 5) / 4))
-            x = cx + math.cos(a) * dist
-            y = cy + math.sin(a) * dist
-            pygame.draw.circle(target, (195, 236, 255), (int(x), int(y)), 2)
+        if self.state == "OPENING" and self.opening_started_at > 0:
+            # ── Kawoosh animation ───────────────────────────────────────────
+            elapsed_ms = now * 1000.0 - self.opening_started_at
+            total_ms = max(1.0, float(self.open_finish_at - self.opening_started_at))
+            t = min(1.0, elapsed_ms / total_ms)  # 0 → 1 over the opening window
 
-        # Specular ripple and core to avoid flat disk look.
-        pygame.draw.circle(target, (114, 205, 255), (cx - int(radius * 0.18), cy - int(radius * 0.22)), int(radius * 0.24), 2)
-        pygame.draw.circle(target, (210, 244, 255), (cx, cy), int(radius * 0.08))
+            if t < 0.38:
+                # Expanding burst: white-hot disc shoots outward.
+                ease = t / 0.38
+                ease_out = 1.0 - (1.0 - ease) ** 2
+                burst_r = int(radius * (0.08 + ease_out * 1.65))
+                white = int(255 * (1.0 - ease * 0.4))
+                pygame.draw.circle(target, (white, min(255, white + 15), 255), (cx, cy), max(1, burst_r))
+                # Bright leading-edge ring.
+                ring_w = max(3, int(burst_r * 0.14))
+                pygame.draw.circle(target, (255, 255, 255), (cx, cy), burst_r, ring_w)
+                # Outer halo.
+                halo = pygame.Surface(target.get_size(), pygame.SRCALPHA)
+                halo_a = int(90 * (1.0 - ease))
+                pygame.draw.circle(halo, (140, 210, 255, halo_a), (cx, cy), burst_r + int(radius * 0.18))
+                target.blit(halo, (0, 0))
+            else:
+                # Contracting / settling: burst pulls back into the event horizon.
+                ease = (t - 0.38) / 0.62
+                ease_in = ease ** 2
+                burst_r = max(radius, int(radius * (1.73 - ease_in * 0.73)))
+                blue_mix = ease_in
+                rr = int(255 * (1 - blue_mix) + 18 * blue_mix)
+                gg = int(255 * (1 - blue_mix) + 148 * blue_mix)
+                bb = 255
+                pygame.draw.circle(target, (rr, gg, bb), (cx, cy), burst_r)
+                # Settling ring.
+                if burst_r > radius + 3:
+                    pygame.draw.circle(target, (190, 235, 255), (cx, cy), burst_r, max(2, int(burst_r * 0.07)))
+                # Begin drawing the event horizon beneath the burst.
+                if ease > 0.5:
+                    self._draw_event_horizon(target, (cx, cy), radius, now, alpha=int(200 * (ease - 0.5) / 0.5))
+            return
+
+        # ── Settled event horizon ────────────────────────────────────────────
+        self._draw_event_horizon(target, (cx, cy), radius, now, alpha=255)
+
+    def _draw_event_horizon(
+        self, target: pygame.Surface, center: Tuple[int, int], radius: int, now: float, alpha: int = 255
+    ) -> None:
+        """Render the shimmering blue event-horizon 'puddle' effect."""
+        cx, cy = center
+
+        # Radial gradient: lighter teal centre, darker deep-blue edge.
+        step = 3
+        for r in range(radius, 0, -step):
+            blend = r / radius  # 1 at edge, 0 at centre
+            rr = int(10 + 28 * blend)
+            gg = int(148 + 44 * blend)
+            bb = int(205 + 45 * (1.0 - blend * 0.15))
+            if alpha < 255:
+                surf = pygame.Surface((r * 2 + 2, r * 2 + 2), pygame.SRCALPHA)
+                pygame.draw.circle(surf, (rr, gg, bb, alpha), (r + 1, r + 1), r)
+                target.blit(surf, (cx - r - 1, cy - r - 1))
+            else:
+                pygame.draw.circle(target, (rr, gg, bb), (cx, cy), r)
+
+        if alpha < 200:
+            return
+
+        overlay = pygame.Surface(target.get_size(), pygame.SRCALPHA)
+
+        # Animated concentric ripple rings expanding from centre.
+        for i in range(6):
+            phase = (now * 0.55 + i / 6.0) % 1.0
+            r = int(radius * 0.97 * phase)
+            if r < 4:
+                continue
+            fade = 1.0 - phase
+            ring_alpha = int(95 * fade * (0.55 + 0.45 * math.sin(now * 1.7 + i * 1.1)))
+            rw = max(1, int(radius * 0.028))
+            pygame.draw.circle(overlay, (165, 228, 255, ring_alpha), (cx, cy), r, rw)
+
+        # Rotating arc shimmer (light playing on the water surface).
+        for i in range(5):
+            base_a = math.radians(now * 48 + i * 72)
+            span = math.radians(28 + 14 * math.sin(now * 0.6 + i))
+            arc_r = int(radius * (0.28 + 0.48 * ((i % 3) / 2.0)))
+            if arc_r > 5:
+                rect = pygame.Rect(cx - arc_r, cy - arc_r, arc_r * 2, arc_r * 2)
+                pygame.draw.arc(overlay, (200, 242, 255, 38), rect, base_a, base_a + span, 2)
+
+        target.blit(overlay, (0, 0))
+
+        # Bright vortex core.
+        core_pulse = 0.5 + 0.5 * math.sin(now * 3.1)
+        core_r = max(2, int(radius * (0.075 + 0.03 * core_pulse)))
+        pygame.draw.circle(target, (205, 242, 255), (cx, cy), core_r)
+        pygame.draw.circle(target, (240, 252, 255), (cx, cy), max(1, core_r // 2))
+
+        # Off-centre specular highlight (upper-left, like a light source above the gate).
+        spec_surf = pygame.Surface(target.get_size(), pygame.SRCALPHA)
+        spec_pulse = 0.45 + 0.55 * (0.5 + 0.5 * math.sin(now * 1.05 + 0.8))
+        spec_x = cx - int(radius * 0.21)
+        spec_y = cy - int(radius * 0.26)
+        spec_r = max(3, int(radius * 0.20 * spec_pulse))
+        pygame.draw.circle(spec_surf, (255, 255, 255, 30), (spec_x, spec_y), spec_r)
+        target.blit(spec_surf, (0, 0))
 
     def _draw_console(self, now: float) -> None:
         panel_rect = self.panel_rect

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ast, sys; ast.parse\\(open\\('stargate_app.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "Bash(python stargate_app.py)",
+      "Bash(pip install:*)",
+      "Bash(where python:*)",
+      "Bash(py -3.12 --version)",
+      "Bash(py -3.11 --version)",
+      "Bash(py -3.10 --version)",
+      "Bash(py -0)",
+      "Bash(start \"\" \"d:/GitHub Projects/Stargate-Dialing-Computer-and-DHD/dist/StargateDialer.exe\")",
+      "Bash(start \"\" python stargate_app.py)"
+    ]
+  }
+}
