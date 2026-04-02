@@ -1115,9 +1115,11 @@ class StargateApp:
                     limit_seconds=MAX_WORMHOLE_DURATION_SECONDS,
                 )
             else:
+                mins = int(remaining_seconds) // 60
+                secs = int(remaining_seconds) % 60
                 self.status = (
-                    f"Wormhole active for {active_seconds:04.1f}s. "
-                    f"Auto-close in {int(remaining_seconds)}s."
+                    f"Wormhole active — {active_seconds:04.1f}s elapsed. "
+                    f"Auto-close in {mins:02d}:{secs:02d}."
                 )
 
     def _draw(self) -> None:
@@ -1125,6 +1127,39 @@ class StargateApp:
         self._draw_background(now)
         self._draw_stargate(now)
         self._draw_console(now)
+        self._draw_warning_flash(now)
+
+    def _draw_warning_flash(self, now: float) -> None:
+        """Red pulsing border + countdown banner when < 5 minutes remain."""
+        if self.state != "CONNECTED":
+            return
+        remaining = MAX_WORMHOLE_DURATION_SECONDS - (pygame.time.get_ticks() - self.connected_since) / 1000.0
+        if remaining > 300:
+            return
+        w, h = self.screen.get_size()
+        # Pulse faster as time runs out (1 Hz at 5 min → 4 Hz at 0).
+        urgency = 1.0 - remaining / 300.0
+        freq = 1.0 + urgency * 3.0
+        pulse = 0.5 + 0.5 * math.sin(now * freq * 2 * math.pi)
+        border_alpha = int(180 * pulse)
+        border_w = max(4, int(14 * urgency))
+
+        border_surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.rect(border_surf, (220, 30, 30, border_alpha), (0, 0, w, h), border_w)
+        self.screen.blit(border_surf, (0, 0))
+
+        # Warning banner along the top of the gate view.
+        mins = int(remaining) // 60
+        secs = int(remaining) % 60
+        warn_text = f"WARNING — AUTO-CLOSE IN  {mins:02d}:{secs:02d}"
+        warn_surf = self.font_md.render(warn_text, True, (255, int(60 + 60 * pulse), 40))
+        banner_alpha = int(220 * (0.6 + 0.4 * pulse))
+        warn_bg = pygame.Surface((warn_surf.get_width() + 28, warn_surf.get_height() + 10), pygame.SRCALPHA)
+        warn_bg.fill((30, 0, 0, banner_alpha))
+        bx = self.left_view_rect.centerx - warn_bg.get_width() // 2
+        by = self.left_view_rect.top + 14
+        self.screen.blit(warn_bg, (bx, by))
+        self.screen.blit(warn_surf, (bx + 14, by + 5))
 
     def _draw_background(self, now: float) -> None:
         width, height = self.screen.get_size()
