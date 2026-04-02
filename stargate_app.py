@@ -745,6 +745,10 @@ class StargateApp:
         self.fail_flash_until = 0
         # Each ripple: (spawn_time_ms, origin_x, origin_y)
         self.dhd_ripples: List[Tuple[int, int, int]] = []
+        # Screensaver state.
+        self.screensaver_active = False
+        self.last_interaction_at = pygame.time.get_ticks()
+        self.screensaver_hold_until = 0   # how long to keep connection before re-dialing
         # Iris state.
         self.iris_closed = False          # whether the iris is currently closed
         self.iris_angle = 0.0             # animation progress 0 (open) → 1 (closed)
@@ -1103,11 +1107,21 @@ class StargateApp:
                     self.log_scroll - event.y,
                 ))
 
+    def _wake_from_screensaver(self) -> None:
+        if self.screensaver_active:
+            self.screensaver_active = False
+            if self.state != "IDLE":
+                self._close_gate()
+            self.status = "Idle. Enter 7-9 symbols and press the DHD centre."
+        self.last_interaction_at = pygame.time.get_ticks()
+
     def _handle_hover(self, pos: Tuple[int, int]) -> None:
+        self.last_interaction_at = pygame.time.get_ticks()
         kind, idx = self.dhd.hit_test(pos)
         self.hovered_symbol = idx if kind == "symbol" else None
 
     def _handle_click(self, pos: Tuple[int, int]) -> None:
+        self._wake_from_screensaver()
         for btn in self.preset_buttons + self.controls:
             if btn.rect.collidepoint(pos):
                 self._activate(btn)
@@ -1120,6 +1134,7 @@ class StargateApp:
             self._start_dial()
 
     def _handle_key(self, key: int) -> None:
+        self._wake_from_screensaver()
         if pygame.K_1 <= key <= pygame.K_9:
             idx = key - pygame.K_1
             self._add_symbol(idx)
@@ -1330,6 +1345,7 @@ class StargateApp:
         self.next_symbol_start_at = 0
         self.spinup_end_at = 0
         self.opening_started_at = 0
+        self.screensaver_hold_until = 0
         self.dial_failed = False
         self.fail_flash_until = 0
         self.status = "Gate closed."
@@ -1342,6 +1358,24 @@ class StargateApp:
         now = pygame.time.get_ticks()
         if self.dial_failed and now >= self.fail_flash_until:
             self.dial_failed = False
+        # Screensaver: auto-dial random address after idle timeout.
+        idle_secs = float(self.settings.get("screensaver_idle_seconds", 60))
+        idle_elapsed = (now - self.last_interaction_at) / 1000.0
+        if not self.screensaver_active and idle_elapsed >= idle_secs and self.state == "IDLE":
+            self.screensaver_active = True
+            self.logger.info("Screensaver activated")
+        if self.screensaver_active:
+            if self.state == "IDLE":
+                # Pick a random known address for variety.
+                name = random.choice(list(KNOWN_ADDRESSES.keys()))
+                self._load_preset(name)
+                self._start_dial()
+            elif self.state == "CONNECTED" and self.screensaver_hold_until == 0:
+                # Hold connection for 8 seconds then close and re-dial.
+                self.screensaver_hold_until = now + 8000
+            elif self.state == "CONNECTED" and now >= self.screensaver_hold_until:
+                self.screensaver_hold_until = 0
+                self._close_gate()
         # Iris animation.
         iris_speed = 2.8  # full travel in ~0.36 s
         if self.iris_angle < self.iris_target:
@@ -1436,6 +1470,8 @@ class StargateApp:
             self._draw_dial_log(now)
         if self.idc_mode:
             self._draw_idc_prompt()
+        if self.screensaver_active:
+            self._draw_screensaver_badge(now)
 
     def _draw_warning_flash(self, now: float) -> None:
         """Red pulsing border + countdown banner when < 5 minutes remain."""
@@ -1468,6 +1504,16 @@ class StargateApp:
         by = self.left_view_rect.top + 14
         self.screen.blit(warn_bg, (bx, by))
         self.screen.blit(warn_surf, (bx + 14, by + 5))
+
+    def _draw_screensaver_badge(self, now: float) -> None:
+        alpha = int(120 + 60 * math.sin(now * 0.8))
+        surf = pygame.Surface((220, 32), pygame.SRCALPHA)
+        surf.fill((0, 0, 0, 100))
+        label = self.font_sm.render("SCREENSAVER  (any key to wake)", True, (180, 200, 220))
+        surf.blit(label, (8, 6))
+        surf.set_alpha(alpha)
+        w, h = self.screen.get_size()
+        self.screen.blit(surf, (w - surf.get_width() - 12, h - surf.get_height() - 12))
 
     def _draw_kawoosh_perspective(self, now: float) -> None:
         """Perspective-foreshortened ring that flies toward the camera during kawoosh."""
