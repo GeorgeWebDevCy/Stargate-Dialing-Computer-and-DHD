@@ -44,6 +44,10 @@ KNOWN_ADDRESSES: Dict[str, List[int]] = {
     "Earth": [1, 11, 2, 19, 21, 24, 35],
 }
 
+# The last symbol in an address is always the Point of Origin — the dialing
+# planet's own glyph.  Symbol index 0 is Earth's PoO.
+POINT_OF_ORIGIN = 0
+
 # Lock order for 9 chevrons (index = gate chevron position, 0 = top/12 o'clock).
 # In SG-1, chevron 7 (top, index 0) locks last for a 7-symbol address, with
 # the right/bottom/left filling in first — matching the show's dramatic finale.
@@ -791,7 +795,12 @@ class StargateApp:
             if symbol_index == self.current_address[self.dial_step_index]:
                 return "active"
         if symbol_index in self.entered_symbols:
+            # Last entered symbol is treated as Point of Origin.
+            if self.entered_symbols and symbol_index == self.entered_symbols[-1]:
+                return "poo"
             return "selected"
+        if symbol_index == POINT_OF_ORIGIN and self.state == "IDLE":
+            return "poo_idle"
         return "idle"
 
     def _symbol_alignment_angle(self, symbol_index: int) -> float:
@@ -1332,6 +1341,12 @@ class StargateApp:
             elif stage == "active":
                 pulse = 0.5 + 0.5 * math.sin(now * 10.0)
                 col = (int(190 + 65 * pulse), int(220 + 25 * pulse), 255)
+            elif stage == "poo":
+                # Point of Origin — distinctive green/gold
+                poo_pulse = 0.5 + 0.5 * math.sin(now * 3.0)
+                col = (int(100 + 60 * poo_pulse), 240, int(80 + 40 * poo_pulse))
+            elif stage == "poo_idle":
+                col = (90, 200, 80)
             elif stage == "selected":
                 col = (170, 205, 244)
             else:
@@ -1356,10 +1371,15 @@ class StargateApp:
             target.blit(shadow_surface, rect.move(1, 2))
             target.blit(text_surface, rect)
 
-            if stage in {"locked", "active"}:
+            if stage in {"locked", "active", "poo", "poo_idle"}:
                 glow = pygame.Surface((24, 24), pygame.SRCALPHA)
-                glow_alpha = 80 if stage == "locked" else 130
-                pygame.draw.circle(glow, (255, 196, 126, glow_alpha), (12, 12), 10)
+                if stage == "poo":
+                    pygame.draw.circle(glow, (80, 255, 80, 110), (12, 12), 10)
+                elif stage == "poo_idle":
+                    pygame.draw.circle(glow, (60, 180, 60, 55), (12, 12), 10)
+                else:
+                    glow_alpha = 80 if stage == "locked" else 130
+                    pygame.draw.circle(glow, (255, 196, 126, glow_alpha), (12, 12), 10)
                 target.blit(glow, (px - 12, py - 12))
 
     def _draw_chevrons(self, target: pygame.Surface, center: Tuple[int, int], radius: int, now: float) -> None:
@@ -1610,8 +1630,14 @@ class StargateApp:
                 self.screen.blit(empty_surface, (pad_x, y + 2))
                 y += empty_surface.get_height() + 6
 
-        index_text = " ".join(f"{i + 1:02d}" for i in self.entered_symbols) or "-"
-        index_line = self._truncate_text(self.font_sm, f"Symbol indexes: {index_text}", content_w)
+        parts = []
+        for pos, sym in enumerate(self.entered_symbols):
+            tag = f"{sym + 1:02d}"
+            if pos == len(self.entered_symbols) - 1:
+                tag += "(PoO)"
+            parts.append(tag)
+        index_text = " ".join(parts) if parts else "-"
+        index_line = self._truncate_text(self.font_sm, f"Glyphs: {index_text}", content_w)
         if y < info_bottom:
             self.screen.blit(
                 self.font_sm.render(index_line, True, (166, 185, 206)),
