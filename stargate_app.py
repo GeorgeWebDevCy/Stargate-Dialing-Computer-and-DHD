@@ -31,6 +31,7 @@ MAX_WORMHOLE_DURATION_SECONDS = 38 * 60
 SYMBOL_ARC_DEG = 360.0 / SYMBOL_COUNT
 TOP_CHEVRON_ANGLE_DEG = -90.0
 DIAL_SPIN_BASE_SPEED = 90.0
+SPINUP_DURATION_MS = 900   # ring spins freely before first symbol target
 DIAL_SPIN_SPEED_STEP = 6.0
 DIAL_MIN_TRAVEL_DEG = 360.0
 CHEVRON_ACTUATE_MS = 380
@@ -659,7 +660,8 @@ class StargateApp:
         self.ring_angle = 0.0
         self.ring_target_angle = 0.0
         self.ring_speed = 0.0
-        self.dial_phase = "IDLE"  # IDLE, SPINNING, CHEVRON_ACTUATE, WAIT_NEXT
+        self.dial_phase = "IDLE"  # IDLE, SPINUP, SPINNING, CHEVRON_ACTUATE, WAIT_NEXT
+        self.spinup_end_at = 0  # when the spin-up phase completes
         self.dial_step_index = 0
         self.chevron_phase_started_at = 0
         self.top_chevron_anim_until = 0
@@ -1083,11 +1085,12 @@ class StargateApp:
         self.locked_count = 0
         self.state = "DIALING"
         self.dial_step_index = 0
-        self.dial_phase = "IDLE"
+        self.dial_phase = "SPINUP"
+        self.spinup_end_at = pygame.time.get_ticks() + SPINUP_DURATION_MS
         self.chevron_phase_started_at = 0
         self.top_chevron_anim_until = 0
         self.next_symbol_start_at = 0
-        self.status = "Dialing sequence started."
+        self.status = "Initialising dialing sequence..."
         self._update_window_title()
         self.audio.start_ambient("ambient_active")
         self.audio.play("engage")
@@ -1127,6 +1130,7 @@ class StargateApp:
         self.dial_step_index = 0
         self.top_chevron_anim_until = 0
         self.next_symbol_start_at = 0
+        self.spinup_end_at = 0
         self.opening_started_at = 0
         self.dial_failed = False
         self.fail_flash_until = 0
@@ -1141,7 +1145,17 @@ class StargateApp:
         if self.dial_failed and now >= self.fail_flash_until:
             self.dial_failed = False
         if self.state == "DIALING":
-            if self.dial_phase == "SPINNING":
+            if self.dial_phase == "SPINUP":
+                # Free spin: accelerates to peak then decelerates before first symbol.
+                elapsed = now - (self.spinup_end_at - SPINUP_DURATION_MS)
+                t = min(1.0, elapsed / SPINUP_DURATION_MS)
+                # Bell curve speed — up then down.
+                spinup_speed = 320.0 * math.sin(t * math.pi)
+                self.ring_angle = (self.ring_angle + spinup_speed * dt) % 360.0
+                if now >= self.spinup_end_at:
+                    self.status = "Dialing sequence started."
+                    self._begin_next_dial_step()
+            elif self.dial_phase == "SPINNING":
                 delta = self.ring_target_angle - self.ring_angle
                 max_step = self.ring_speed * dt
                 if abs(delta) <= max_step:
