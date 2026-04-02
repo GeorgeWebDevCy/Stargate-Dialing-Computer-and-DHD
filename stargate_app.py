@@ -48,6 +48,11 @@ KNOWN_ADDRESSES: Dict[str, List[int]] = {
 # planet's own glyph.  Symbol index 0 is Earth's PoO.
 POINT_OF_ORIGIN = 0
 
+# Probability (0–1) that the 7th chevron fails to lock on an unknown address.
+DIAL_FAIL_CHANCE = 0.35
+# How long the failure flash persists (ms).
+DIAL_FAIL_FLASH_MS = 1800
+
 # Lock order for 9 chevrons (index = gate chevron position, 0 = top/12 o'clock).
 # In SG-1, chevron 7 (top, index 0) locks last for a 7-symbol address, with
 # the right/bottom/left filling in first — matching the show's dramatic finale.
@@ -662,6 +667,8 @@ class StargateApp:
         self.open_finish_at = 0
         self.opening_started_at = 0
         self.connected_since = 0
+        self.dial_failed = False
+        self.fail_flash_until = 0
 
         rng = random.Random(42)
         self.stars = [
@@ -836,6 +843,10 @@ class StargateApp:
         )
 
     def _finish_dialing(self, now: int) -> None:
+        is_known = any(self.current_address == addr for addr in KNOWN_ADDRESSES.values())
+        if not is_known and random.random() < DIAL_FAIL_CHANCE:
+            self._fail_dial(now)
+            return
         self.state = "OPENING"
         self.dial_phase = "IDLE"
         self.open_finish_at = now + 1800
@@ -844,6 +855,21 @@ class StargateApp:
         self.audio.stop_loop()
         self.audio.play("kawoosh")
         self.logger.info("Dialing complete, opening wormhole")
+
+    def _fail_dial(self, now: int) -> None:
+        self.dial_failed = True
+        self.fail_flash_until = now + DIAL_FAIL_FLASH_MS
+        self.state = "IDLE"
+        self.dial_phase = "IDLE"
+        self.locked_count = 0
+        self.current_address.clear()
+        self.entered_symbols.clear()
+        self.status = "LOCK FAILURE — destination could not be confirmed."
+        self.audio.stop_loop()
+        self.audio.start_ambient("ambient_idle")
+        self.audio.play("error")
+        self._update_window_title()
+        self.logger.info("Dialing failed — lock failure")
 
     def _rebuild_layout(self) -> None:
         width, height = self.screen.get_size()
@@ -1102,6 +1128,8 @@ class StargateApp:
         self.top_chevron_anim_until = 0
         self.next_symbol_start_at = 0
         self.opening_started_at = 0
+        self.dial_failed = False
+        self.fail_flash_until = 0
         self.status = "Gate closed."
         self._update_window_title()
         self.audio.start_ambient("ambient_idle")
@@ -1110,6 +1138,8 @@ class StargateApp:
 
     def _update(self, dt: float) -> None:
         now = pygame.time.get_ticks()
+        if self.dial_failed and now >= self.fail_flash_until:
+            self.dial_failed = False
         if self.state == "DIALING":
             if self.dial_phase == "SPINNING":
                 delta = self.ring_target_angle - self.ring_angle
@@ -1172,6 +1202,7 @@ class StargateApp:
         self._draw_stargate(now)
         self._draw_console(now)
         self._draw_warning_flash(now)
+        self._draw_fail_flash(now)
 
     def _draw_warning_flash(self, now: float) -> None:
         """Red pulsing border + countdown banner when < 5 minutes remain."""
@@ -1204,6 +1235,29 @@ class StargateApp:
         by = self.left_view_rect.top + 14
         self.screen.blit(warn_bg, (bx, by))
         self.screen.blit(warn_surf, (bx + 14, by + 5))
+
+    def _draw_fail_flash(self, now: float) -> None:
+        """Full-screen red flash + LOCK FAILURE banner after a dialing failure."""
+        if not self.dial_failed:
+            return
+        ticks = pygame.time.get_ticks()
+        elapsed = ticks - (self.fail_flash_until - DIAL_FAIL_FLASH_MS)
+        progress = min(1.0, elapsed / DIAL_FAIL_FLASH_MS)
+        # Sharp flash at start, fades out.
+        alpha = int(200 * (1.0 - progress) ** 1.5 * (0.5 + 0.5 * math.sin(now * 18)))
+        w, h = self.screen.get_size()
+        flash = pygame.Surface((w, h), pygame.SRCALPHA)
+        flash.fill((200, 10, 10, max(0, alpha)))
+        self.screen.blit(flash, (0, 0))
+
+        if progress < 0.75:
+            label = self.font_lg.render("LOCK FAILURE", True, (255, 80, 60))
+            lx = self.left_view_rect.centerx - label.get_width() // 2
+            ly = self.gate_center[1] - label.get_height() // 2
+            bg = pygame.Surface((label.get_width() + 24, label.get_height() + 12), pygame.SRCALPHA)
+            bg.fill((20, 0, 0, 200))
+            self.screen.blit(bg, (lx - 12, ly - 6))
+            self.screen.blit(label, (lx, ly))
 
     def _draw_background(self, now: float) -> None:
         width, height = self.screen.get_size()
