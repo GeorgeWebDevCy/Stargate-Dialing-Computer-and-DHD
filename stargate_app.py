@@ -947,6 +947,11 @@ class StargateApp:
             self._clear_symbols()
         elif key == pygame.K_ESCAPE:
             self._close_gate()
+        elif pygame.K_F1 <= key <= pygame.K_F4:
+            names = list(KNOWN_ADDRESSES.keys())
+            idx = key - pygame.K_F1
+            if idx < len(names):
+                self._load_preset(names[idx])
 
     def _activate(self, btn: Button) -> None:
         if btn.action == "dial":
@@ -1015,10 +1020,27 @@ class StargateApp:
         self.top_chevron_anim_until = 0
         self.next_symbol_start_at = 0
         self.status = "Dialing sequence started."
+        self._update_window_title()
         self.audio.play("engage")
         self.audio.start_loop("ring")
         self.logger.info("Dialing started", length=len(self.current_address), address=self.current_address)
         self._begin_next_dial_step()
+
+    def _update_window_title(self) -> None:
+        state_labels = {
+            "IDLE": "Idle",
+            "DIALING": "Dialing...",
+            "OPENING": "Opening Wormhole",
+            "CONNECTED": "CONNECTED",
+        }
+        label = state_labels.get(self.state, self.state)
+        if self.state == "CONNECTED" and self.current_address:
+            dest = next(
+                (name for name, addr in KNOWN_ADDRESSES.items() if addr == self.current_address),
+                "Unknown",
+            )
+            label = f"CONNECTED — {dest}"
+        pygame.display.set_caption(f"Stargate Dialing Computer  |  {label}")
 
     def _close_gate(self) -> None:
         if self.state == "IDLE":
@@ -1038,6 +1060,7 @@ class StargateApp:
         self.next_symbol_start_at = 0
         self.opening_started_at = 0
         self.status = "Gate closed."
+        self._update_window_title()
         self.audio.play("close")
         self.logger.info("Gate closed")
 
@@ -1078,6 +1101,7 @@ class StargateApp:
                 self.state = "CONNECTED"
                 self.connected_since = now
                 self.status = "Wormhole established. Gate is active."
+                self._update_window_title()
                 self.audio.play("connected")
                 self.logger.info("Wormhole connected")
         elif self.state == "CONNECTED":
@@ -1574,7 +1598,7 @@ class StargateApp:
 
         hints = [
             "Center button = DIAL / ENGAGE",
-            "1-9: quick symbols 01..09",
+            "1-9: quick symbols 01..09  |  F1-F4: load preset",
             "Enter: DIAL | Backspace: BACK | Delete: CLEAR | Esc: CLOSE",
         ]
         hint_line_h = self.font_sm.get_height() + 2
