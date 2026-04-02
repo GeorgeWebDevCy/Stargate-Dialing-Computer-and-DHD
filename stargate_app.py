@@ -45,6 +45,34 @@ KNOWN_ADDRESSES: Dict[str, List[int]] = {
     "Earth": [1, 11, 2, 19, 21, 24, 35],
 }
 
+# Flavour text shown in the destination info panel for known addresses.
+DESTINATION_INFO: Dict[str, Dict[str, str]] = {
+    "Abydos": {
+        "galaxy": "Milky Way",
+        "status": "Allied",
+        "threat": "LOW",
+        "notes": "Desert world. Home of the Abydonians. First planet dialled by SG-1.",
+    },
+    "Chulak": {
+        "galaxy": "Milky Way",
+        "status": "Allied (Jaffa)",
+        "threat": "MODERATE",
+        "notes": "Jaffa homeworld. Base of Teal'c's former master Apophis.",
+    },
+    "Dakara": {
+        "galaxy": "Milky Way",
+        "status": "Free Jaffa Nation",
+        "threat": "LOW",
+        "notes": "Sacred Jaffa site. Location of the Ancient weapon.",
+    },
+    "Earth": {
+        "galaxy": "Milky Way",
+        "status": "SGC / HOME",
+        "threat": "NONE",
+        "notes": "Origin world. Stargate Command, Cheyenne Mountain.",
+    },
+}
+
 # The last symbol in an address is always the Point of Origin — the dialing
 # planet's own glyph.  Symbol index 0 is Earth's PoO.
 POINT_OF_ORIGIN = 0
@@ -919,7 +947,8 @@ class StargateApp:
 
     def _build_buttons(self) -> None:
         gap = 10
-        preset_w = int((self.panel_rect.width - gap * 5) / 4)
+        # 4 known presets + 1 RANDOM button = 5 columns.
+        preset_w = int((self.panel_rect.width - gap * 6) / 5)
         preset_h = 42
         dhd_top = self.dhd.center[1] - self.dhd.outer_radius
         max_top = dhd_top - preset_h - 12
@@ -935,6 +964,9 @@ class StargateApp:
             rect = pygame.Rect(x, top_y, preset_w, preset_h)
             self.preset_buttons.append(Button(rect=rect, label=name, action="preset", payload=name))
             x += preset_w + gap
+        # RANDOM button at the end.
+        rect = pygame.Rect(x, top_y, preset_w, preset_h)
+        self.preset_buttons.append(Button(rect=rect, label="RANDOM", action="random"))
 
         control_h = 46
         control_gap = 10
@@ -1036,6 +1068,8 @@ class StargateApp:
             self._close_gate()
         elif btn.action == "preset" and isinstance(btn.payload, str):
             self._load_preset(btn.payload)
+        elif btn.action == "random":
+            self._load_random_address()
 
     def _add_symbol(self, idx: int) -> None:
         if self.state != "IDLE":
@@ -1095,6 +1129,21 @@ class StargateApp:
         self.audio.play("press")
         self.status = f"Loaded preset: {name}."
         self.logger.info("Preset loaded", preset=name, symbols=len(self.entered_symbols))
+
+    def _load_random_address(self) -> None:
+        if self.state != "IDLE":
+            self.audio.play("error")
+            return
+        known_addrs = list(KNOWN_ADDRESSES.values())
+        while True:
+            symbols = random.sample(range(1, SYMBOL_COUNT), MIN_ADDRESS_LENGTH - 1)
+            symbols.append(POINT_OF_ORIGIN)
+            if symbols not in known_addrs:
+                break
+        self.entered_symbols = symbols
+        self.audio.play("press")
+        self.status = "Random address loaded — destination UNKNOWN."
+        self.logger.info("Random address loaded", symbols=symbols)
 
     def _start_dial(self) -> None:
         if self.state != "IDLE":
@@ -1710,6 +1759,30 @@ class StargateApp:
         self.screen.blit(subtitle, (pad_x + 2, title_y + 40))
 
         y = title_y + 72
+        # Destination info panel — shown when connected to a known address.
+        if self.state == "CONNECTED" and y < info_bottom:
+            dest_name = next(
+                (name for name, addr in KNOWN_ADDRESSES.items() if addr == self.current_address),
+                None,
+            )
+            info = DESTINATION_INFO.get(dest_name or "", {})
+            if dest_name and info:
+                # Coloured header bar.
+                header_text = f"DESTINATION: {dest_name.upper()}"
+                header_surf = self.font_md.render(header_text, True, (80, 220, 120))
+                self.screen.blit(header_surf, (pad_x, y))
+                y += header_surf.get_height() + 4
+                for key, val in info.items():
+                    if y >= info_bottom:
+                        break
+                    threat_color = (255, 80, 60) if val in {"HIGH", "EXTREME"} else (255, 208, 80) if val == "MODERATE" else (180, 220, 180)
+                    label_col = (148, 170, 198)
+                    line = self._truncate_text(self.font_sm, f"{key.upper()}: {val}", content_w)
+                    col = threat_color if key == "threat" else label_col
+                    self.screen.blit(self.font_sm.render(line, True, col), (pad_x, y))
+                    y += self.font_sm.get_height() + 2
+                y += 6
+
         if y < info_bottom:
             self.screen.blit(
                 self.font_md.render("Address Glyphs:", True, (255, 208, 148)),
@@ -1778,7 +1851,10 @@ class StargateApp:
             y += self.font_sm.get_height() + 2
 
         for btn in self.preset_buttons:
-            self._draw_pill(btn, (43, 72, 106), (214, 233, 255), hover=btn.rect.collidepoint(pygame.mouse.get_pos()))
+            if btn.action == "random":
+                self._draw_pill(btn, (80, 55, 18), (255, 210, 120), hover=btn.rect.collidepoint(pygame.mouse.get_pos()))
+            else:
+                self._draw_pill(btn, (43, 72, 106), (214, 233, 255), hover=btn.rect.collidepoint(pygame.mouse.get_pos()))
 
         symbol_stage: Dict[int, int] = {}
         for sym in self.entered_symbols:
