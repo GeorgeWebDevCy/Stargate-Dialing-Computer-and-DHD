@@ -671,6 +671,8 @@ class StargateApp:
         self.connected_since = 0
         self.dial_failed = False
         self.fail_flash_until = 0
+        # Each ripple: (spawn_time_ms, origin_x, origin_y)
+        self.dhd_ripples: List[Tuple[int, int, int]] = []
 
         rng = random.Random(42)
         self.stars = [
@@ -1046,8 +1048,29 @@ class StargateApp:
         if idx < 0 or idx >= SYMBOL_COUNT:
             return
         self.entered_symbols.append(idx)
+        self._spawn_dhd_ripple(idx)
         self.audio.play("press")
         self.status = f"Selected {len(self.entered_symbols)} symbols."
+
+    def _spawn_dhd_ripple(self, symbol_idx: Optional[int]) -> None:
+        """Record a ripple originating from the given DHD symbol (or centre)."""
+        now = pygame.time.get_ticks()
+        if symbol_idx is None:
+            ox, oy = self.dhd.center
+        else:
+            sector = next((s for s in self.dhd.sectors if s.index == symbol_idx), None)
+            if sector is None:
+                ox, oy = self.dhd.center
+            else:
+                mid_angle = (sector.start_angle + ((sector.end_angle - sector.start_angle) % 360.0) * 0.5) % 360.0
+                rad = math.radians(mid_angle)
+                mid_r = (sector.inner_radius + sector.outer_radius) * 0.5
+                ox = int(self.dhd.center[0] + math.sin(rad) * mid_r)
+                oy = int(self.dhd.center[1] - math.cos(rad) * mid_r)
+        self.dhd_ripples.append((now, ox, oy))
+        # Keep at most 6 active ripples.
+        if len(self.dhd_ripples) > 6:
+            self.dhd_ripples.pop(0)
 
     def _remove_symbol(self) -> None:
         if self.state != "IDLE":
@@ -1092,6 +1115,7 @@ class StargateApp:
         self.next_symbol_start_at = 0
         self.status = "Initialising dialing sequence..."
         self._update_window_title()
+        self._spawn_dhd_ripple(None)
         self.audio.start_ambient("ambient_active")
         self.audio.play("engage")
         self.audio.start_loop("ring")
@@ -1249,6 +1273,25 @@ class StargateApp:
         by = self.left_view_rect.top + 14
         self.screen.blit(warn_bg, (bx, by))
         self.screen.blit(warn_surf, (bx + 14, by + 5))
+
+    def _draw_dhd_ripples(self, now: float) -> None:
+        """Expanding translucent rings radiating from DHD button press positions."""
+        RIPPLE_DURATION_MS = 700
+        now_ms = pygame.time.get_ticks()
+        ripple_surf = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        alive = []
+        for spawn_ms, ox, oy in self.dhd_ripples:
+            elapsed = now_ms - spawn_ms
+            if elapsed >= RIPPLE_DURATION_MS:
+                continue
+            alive.append((spawn_ms, ox, oy))
+            t = elapsed / RIPPLE_DURATION_MS  # 0 → 1
+            r = int(self.dhd.outer_radius * 0.85 * t)
+            alpha = int(180 * (1.0 - t) ** 1.4)
+            width = max(1, int(4 * (1.0 - t)))
+            pygame.draw.circle(ripple_surf, (255, 210, 120, alpha), (ox, oy), r, width)
+        self.dhd_ripples[:] = alive
+        self.screen.blit(ripple_surf, (0, 0))
 
     def _draw_fail_flash(self, now: float) -> None:
         """Full-screen red flash + LOCK FAILURE banner after a dialing failure."""
@@ -1753,6 +1796,7 @@ class StargateApp:
             pulse=pulse,
             connected=connected,
         )
+        self._draw_dhd_ripples(now)
 
         for btn in self.controls:
             hover = btn.rect.collidepoint(pygame.mouse.get_pos())
