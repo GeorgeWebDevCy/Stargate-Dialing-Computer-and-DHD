@@ -1611,14 +1611,20 @@ class StargateApp:
             b = int(26 + 26 * blend)
             pygame.draw.line(self.screen, (r, g, b), (0, y), (width, y))
 
+        # Nebulas drift slowly on their own parallax layer.
+        idle_w = 1.0 if self.state == "IDLE" else 0.15
+        neb_pan_x = math.sin(now * 0.04) * width * 0.012 * idle_w
+        neb_pan_y = math.cos(now * 0.03) * height * 0.008 * idle_w
         nebula = pygame.Surface((width, height), pygame.SRCALPHA)
-        for cx, cy, radius, phase in (
+        for base_cx, base_cy, radius, phase in (
             (int(width * 0.16), int(height * 0.18), int(height * 0.30), 0.7),
             (int(width * 0.40), int(height * 0.74), int(height * 0.38), 1.2),
             (int(width * 0.84), int(height * 0.18), int(height * 0.29), 0.4),
         ):
+            ncx = int(base_cx + neb_pan_x)
+            ncy = int(base_cy + neb_pan_y)
             glow = 30 + int(18 * (1 + math.sin(now + phase)))
-            pygame.draw.circle(nebula, (26, 62, 112, glow), (cx, cy), radius)
+            pygame.draw.circle(nebula, (26, 62, 112, glow), (ncx, ncy), radius)
         self.screen.blit(nebula, (0, 0))
 
         # Perspective floor plane for depth.
@@ -1637,12 +1643,19 @@ class StargateApp:
             pygame.draw.line(floor, (36, 62, 92, 34), (px, height), (vanishing_x, horizon_y), 1)
         self.screen.blit(floor, (0, 0))
 
+        # Camera pan: slow sinusoidal drift that pauses during active dialing.
+        idle_weight = 1.0 if self.state == "IDLE" else 0.15
+        pan_x = math.sin(now * 0.07) * width * 0.018 * idle_weight
+        pan_y = math.cos(now * 0.05) * height * 0.010 * idle_weight
+
         for x, y, size, phase in self.stars:
             twinkle = 130 + int(120 * (0.5 + 0.5 * math.sin(now * 1.4 + phase)))
             color = (twinkle, twinkle, 255)
-            # Subtle horizontal drift gives parallax feeling.
-            px = int((x + now * (2 + size * 0.9) + phase * 8) % width)
-            py = y if y < int(height * 0.66) else int(height * 0.66 + (y % max(1, int(height * 0.34))))
+            # Horizontal drift + parallax pan (deeper stars move less).
+            parallax = size / 3.0  # small stars are "farther away"
+            px = int((x + now * (2 + size * 0.9) + phase * 8 + pan_x * parallax) % width)
+            raw_py = y + pan_y * parallax
+            py = int(raw_py) if raw_py < height * 0.66 else int(height * 0.66 + (y % max(1, int(height * 0.34))))
             pygame.draw.circle(self.screen, color, (px, py), size)
 
     def _draw_stargate(self, now: float) -> None:
