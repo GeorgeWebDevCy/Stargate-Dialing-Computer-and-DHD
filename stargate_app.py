@@ -701,6 +701,13 @@ class StargateApp:
         self.fail_flash_until = 0
         # Each ripple: (spawn_time_ms, origin_x, origin_y)
         self.dhd_ripples: List[Tuple[int, int, int]] = []
+        # Iris state.
+        self.iris_closed = False          # whether the iris is currently closed
+        self.iris_angle = 0.0             # animation progress 0 (open) → 1 (closed)
+        self.iris_target = 0.0
+        self.idc_mode = False             # whether IDC entry dialog is active
+        self.idc_entered = ""             # digits entered so far
+        self.idc_correct = "314"          # the "correct" IDC code
         # Dial history log — each entry: {"time": str, "dest": str, "result": str, "symbols": list}
         self.dial_log: List[Dict[str, object]] = []
         self.log_scroll = 0        # topmost visible entry index
@@ -1069,6 +1076,16 @@ class StargateApp:
         elif key == pygame.K_TAB:
             self.show_log = not self.show_log
             self.log_scroll = max(0, len(self.dial_log) - 6)
+        elif key == pygame.K_i:
+            self._toggle_iris()
+        elif self.idc_mode:
+            if pygame.K_0 <= key <= pygame.K_9:
+                self.idc_entered += chr(key)
+                if len(self.idc_entered) >= 3:
+                    self._submit_idc()
+            elif key == pygame.K_ESCAPE:
+                self.idc_mode = False
+                self.idc_entered = ""
         elif pygame.K_F1 <= key <= pygame.K_F4:
             names = list(KNOWN_ADDRESSES.keys())
             idx = key - pygame.K_F1
@@ -1189,6 +1206,38 @@ class StargateApp:
         self.logger.info("Dialing started", length=len(self.current_address), address=self.current_address)
         self._begin_next_dial_step()
 
+    def _toggle_iris(self) -> None:
+        if self.iris_closed:
+            # Already closed — enter IDC mode to open.
+            if self.state == "CONNECTED":
+                self.idc_mode = True
+                self.idc_entered = ""
+                self.status = "IRIS LOCKED — Enter IDC code (3 digits)."
+            else:
+                self.iris_closed = False
+                self.iris_target = 0.0
+                self.status = "Iris open."
+        else:
+            self.iris_closed = True
+            self.iris_target = 1.0
+            self.idc_mode = False
+            self.status = "Iris closed."
+        self.logger.info("Iris toggled", closed=self.iris_closed)
+
+    def _submit_idc(self) -> None:
+        code = self.idc_entered[:3]
+        self.idc_entered = ""
+        self.idc_mode = False
+        if code == self.idc_correct:
+            self.iris_closed = False
+            self.iris_target = 0.0
+            self.status = "IDC accepted — iris open."
+            self.logger.info("IDC accepted")
+        else:
+            self.status = f"IDC REJECTED ({code}) — iris remains closed."
+            self.audio.play("error")
+            self.logger.info("IDC rejected", code=code)
+
     def _update_window_title(self) -> None:
         state_labels = {
             "IDLE": "Idle",
@@ -1235,6 +1284,12 @@ class StargateApp:
         now = pygame.time.get_ticks()
         if self.dial_failed and now >= self.fail_flash_until:
             self.dial_failed = False
+        # Iris animation.
+        iris_speed = 2.8  # full travel in ~0.36 s
+        if self.iris_angle < self.iris_target:
+            self.iris_angle = min(self.iris_target, self.iris_angle + iris_speed * dt)
+        elif self.iris_angle > self.iris_target:
+            self.iris_angle = max(self.iris_target, self.iris_angle - iris_speed * dt)
         if self.state == "DIALING":
             if self.dial_phase == "SPINUP":
                 # Free spin: accelerates to peak then decelerates before first symbol.
@@ -1320,6 +1375,8 @@ class StargateApp:
         self._draw_fail_flash(now)
         if self.show_log:
             self._draw_dial_log(now)
+        if self.idc_mode:
+            self._draw_idc_prompt()
 
     def _draw_warning_flash(self, now: float) -> None:
         """Red pulsing border + countdown banner when < 5 minutes remain."""
@@ -1352,6 +1409,20 @@ class StargateApp:
         by = self.left_view_rect.top + 14
         self.screen.blit(warn_bg, (bx, by))
         self.screen.blit(warn_surf, (bx + 14, by + 5))
+
+    def _draw_idc_prompt(self) -> None:
+        """Small banner below the gate prompting for IDC digits."""
+        text = f"IDC: {self.idc_entered}{'_' * (3 - len(self.idc_entered))}   (Esc to cancel)"
+        surf = self.font_md.render(text, True, (255, 220, 80))
+        w = surf.get_width() + 28
+        h = surf.get_height() + 14
+        bx = self.left_view_rect.centerx - w // 2
+        by = self.gate_center[1] + self.gate_outer_radius + 12
+        bg = pygame.Surface((w, h), pygame.SRCALPHA)
+        bg.fill((20, 15, 0, 210))
+        pygame.draw.rect(bg, (200, 160, 40, 200), (0, 0, w, h), 2)
+        self.screen.blit(bg, (bx, by))
+        self.screen.blit(surf, (bx + 14, by + 7))
 
     def _draw_dial_log(self, now: float) -> None:
         """Overlay showing the scrollable dial history on the gate view."""
@@ -1535,6 +1606,9 @@ class StargateApp:
                 pygame.draw.circle(glow_surf, (28, 108, 230, max(0, a)), local_center, inner_radius + gl, 2)
             gate_layer.blit(glow_surf, (0, 0))
             self._draw_wormhole(gate_layer, local_center, inner_radius - 2, now)
+
+        if self.iris_angle > 0.005:
+            self._draw_iris(gate_layer, local_center, inner_radius - 2, self.iris_angle, now)
 
         tilt_factor = 0.84
         tilt_size = (layer_size, max(1, int(layer_size * tilt_factor)))
@@ -1729,6 +1803,45 @@ class StargateApp:
 
         # ── Settled event horizon ────────────────────────────────────────────
         self._draw_event_horizon(target, (cx, cy), radius, now, alpha=255)
+
+    def _draw_iris(
+        self, target: pygame.Surface, center: Tuple[int, int], radius: int, angle: float, now: float
+    ) -> None:
+        """Trinium iris — 12 interlocking petals that rotate closed."""
+        cx, cy = center
+        petal_count = 12
+        # angle: 0 = open, 1 = fully closed.
+        rotation_deg = angle * 75.0  # petals rotate 75° to close
+        # Draw petals from outer edge inward.
+        for i in range(petal_count):
+            base_a = math.radians(i * (360 / petal_count) + rotation_deg)
+            # Each petal: a wedge from the outer rim to the centre.
+            outer_a1 = base_a - math.radians(14)
+            outer_a2 = base_a + math.radians(14)
+            inner_r = max(1, int(radius * (1.0 - angle) * 0.92))
+            pts = []
+            # Outer arc.
+            for step in range(6):
+                a = outer_a1 + (outer_a2 - outer_a1) * step / 5
+                pts.append((int(cx + math.cos(a) * radius), int(cy + math.sin(a) * radius)))
+            # Tip.
+            tip_a = (outer_a1 + outer_a2) / 2 + math.radians(180)
+            pts.append((int(cx + math.cos(tip_a) * inner_r), int(cy + math.sin(tip_a) * inner_r)))
+
+            shade = int(130 + 80 * (i % 2))
+            pygame.draw.polygon(target, (shade, shade + 10, shade + 20), pts)
+            pygame.draw.polygon(target, (50, 60, 75), pts, 1)
+
+        # Solid centre cap once fully (>95%) closed.
+        if angle > 0.95:
+            cap_r = max(1, int(radius * 0.12 * angle))
+            pygame.draw.circle(target, (110, 120, 135), (cx, cy), cap_r)
+
+        # IDC prompt text drawn on the iris when fully closed.
+        if angle > 0.90 and self.idc_mode:
+            idc_display = "IDC: " + self.idc_entered + "_" * (3 - len(self.idc_entered))
+            idc_surf = self.font_md.render(idc_display, True, (255, 220, 100))
+            target.blit(idc_surf, idc_surf.get_rect(center=(cx, cy)))
 
     def _draw_event_horizon(
         self, target: pygame.Surface, center: Tuple[int, int], radius: int, now: float, alpha: int = 255
@@ -1947,9 +2060,9 @@ class StargateApp:
             self._draw_pill(btn, fill, text, hover=hover)
 
         hints = [
-            "Center button = DIAL / ENGAGE  |  Tab: toggle Dial Log",
-            "1-9: quick symbols 01..09  |  F1-F4: load preset",
-            "Enter: DIAL | Backspace: BACK | Delete: CLEAR | Esc: CLOSE",
+            "Center = DIAL  |  I: Iris  |  Tab: Dial Log",
+            "1-9: symbols  |  F1-F4: presets  |  IDC code: 314",
+            "Enter: DIAL | Backspace: BACK | Del: CLEAR | Esc: CLOSE",
         ]
         hint_line_h = self.font_sm.get_height() + 2
         hints_total_h = len(hints) * hint_line_h
