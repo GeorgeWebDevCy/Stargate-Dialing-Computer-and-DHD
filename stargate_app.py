@@ -701,6 +701,10 @@ class StargateApp:
         self.fail_flash_until = 0
         # Each ripple: (spawn_time_ms, origin_x, origin_y)
         self.dhd_ripples: List[Tuple[int, int, int]] = []
+        # Dial history log — each entry: {"time": str, "dest": str, "result": str, "symbols": list}
+        self.dial_log: List[Dict[str, object]] = []
+        self.log_scroll = 0        # topmost visible entry index
+        self.show_log = False      # toggle with Tab
 
         rng = random.Random(42)
         self.stars = [
@@ -897,6 +901,12 @@ class StargateApp:
         self.current_address.clear()
         self.entered_symbols.clear()
         self.status = "LOCK FAILURE — destination could not be confirmed."
+        self.dial_log.append({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "dest": "UNKNOWN",
+            "result": "FAILED",
+            "symbols": list(self.current_address),
+        })
         self.audio.stop_loop()
         self.audio.start_ambient("ambient_idle")
         self.audio.play("error")
@@ -1022,6 +1032,11 @@ class StargateApp:
                 self._handle_click(event.pos)
             elif event.type == pygame.KEYDOWN:
                 self._handle_key(event.key)
+            elif event.type == pygame.MOUSEWHEEL and self.show_log:
+                self.log_scroll = max(0, min(
+                    len(self.dial_log) - 1,
+                    self.log_scroll - event.y,
+                ))
 
     def _handle_hover(self, pos: Tuple[int, int]) -> None:
         kind, idx = self.dhd.hit_test(pos)
@@ -1051,6 +1066,9 @@ class StargateApp:
             self._clear_symbols()
         elif key == pygame.K_ESCAPE:
             self._close_gate()
+        elif key == pygame.K_TAB:
+            self.show_log = not self.show_log
+            self.log_scroll = max(0, len(self.dial_log) - 6)
         elif pygame.K_F1 <= key <= pygame.K_F4:
             names = list(KNOWN_ADDRESSES.keys())
             idx = key - pygame.K_F1
@@ -1265,6 +1283,16 @@ class StargateApp:
                 self._update_window_title()
                 self.audio.play("connected")
                 self.logger.info("Wormhole connected")
+                dest = next(
+                    (n for n, a in KNOWN_ADDRESSES.items() if a == self.current_address),
+                    "UNKNOWN",
+                )
+                self.dial_log.append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "dest": dest,
+                    "result": "CONNECTED",
+                    "symbols": list(self.current_address),
+                })
         elif self.state == "CONNECTED":
             active_seconds = (now - self.connected_since) / 1000.0
             remaining_seconds = MAX_WORMHOLE_DURATION_SECONDS - active_seconds
@@ -1290,6 +1318,8 @@ class StargateApp:
         self._draw_console(now)
         self._draw_warning_flash(now)
         self._draw_fail_flash(now)
+        if self.show_log:
+            self._draw_dial_log(now)
 
     def _draw_warning_flash(self, now: float) -> None:
         """Red pulsing border + countdown banner when < 5 minutes remain."""
@@ -1322,6 +1352,42 @@ class StargateApp:
         by = self.left_view_rect.top + 14
         self.screen.blit(warn_bg, (bx, by))
         self.screen.blit(warn_surf, (bx + 14, by + 5))
+
+    def _draw_dial_log(self, now: float) -> None:
+        """Overlay showing the scrollable dial history on the gate view."""
+        r = self.left_view_rect
+        log_w = min(r.width - 40, 520)
+        row_h = self.font_sm.get_height() + 6
+        visible = 8
+        panel_h = row_h * (visible + 1) + 20
+        lx = r.left + (r.width - log_w) // 2
+        ly = r.top + 20
+
+        bg = pygame.Surface((log_w, panel_h), pygame.SRCALPHA)
+        bg.fill((8, 14, 22, 210))
+        pygame.draw.rect(bg, (60, 90, 130, 180), (0, 0, log_w, panel_h), 2)
+        self.screen.blit(bg, (lx, ly))
+
+        header = self.font_md.render("DIAL LOG  (Tab to close, scroll to browse)", True, (140, 200, 255))
+        self.screen.blit(header, (lx + 10, ly + 8))
+
+        if not self.dial_log:
+            no_data = self.font_sm.render("No dials recorded yet.", True, (120, 140, 160))
+            self.screen.blit(no_data, (lx + 10, ly + row_h + 14))
+            return
+
+        entries = self.dial_log
+        start = max(0, min(self.log_scroll, len(entries) - visible))
+        for i, entry in enumerate(entries[start: start + visible]):
+            ey = ly + row_h * (i + 1) + 14
+            result_col = (80, 220, 120) if entry["result"] == "CONNECTED" else (220, 80, 80)
+            syms = " ".join(f"{s + 1:02d}" for s in entry["symbols"])  # type: ignore[union-attr]
+            line = self._truncate_text(
+                self.font_sm,
+                f"{entry['time']}  {entry['dest']:10s}  [{entry['result']}]  {syms}",
+                log_w - 20,
+            )
+            self.screen.blit(self.font_sm.render(line, True, result_col), (lx + 10, ey))
 
     def _draw_dhd_ripples(self, now: float) -> None:
         """Expanding translucent rings radiating from DHD button press positions."""
@@ -1881,7 +1947,7 @@ class StargateApp:
             self._draw_pill(btn, fill, text, hover=hover)
 
         hints = [
-            "Center button = DIAL / ENGAGE",
+            "Center button = DIAL / ENGAGE  |  Tab: toggle Dial Log",
             "1-9: quick symbols 01..09  |  F1-F4: load preset",
             "Enter: DIAL | Backspace: BACK | Delete: CLEAR | Esc: CLOSE",
         ]
