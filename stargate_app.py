@@ -1429,6 +1429,7 @@ class StargateApp:
         self._draw_background(now)
         self._draw_stargate(now)
         self._draw_console(now)
+        self._draw_kawoosh_perspective(now)
         self._draw_warning_flash(now)
         self._draw_fail_flash(now)
         if self.show_log:
@@ -1467,6 +1468,46 @@ class StargateApp:
         by = self.left_view_rect.top + 14
         self.screen.blit(warn_bg, (bx, by))
         self.screen.blit(warn_surf, (bx + 14, by + 5))
+
+    def _draw_kawoosh_perspective(self, now: float) -> None:
+        """Perspective-foreshortened ring that flies toward the camera during kawoosh."""
+        if self.state != "OPENING" or self.opening_started_at <= 0:
+            return
+        elapsed_ms = now * 1000.0 - self.opening_started_at
+        total_ms = max(1.0, float(self.open_finish_at - self.opening_started_at))
+        t = min(1.0, elapsed_ms / total_ms)
+
+        # Only visible during the burst phase (~0 – 0.55).
+        if t > 0.55:
+            return
+
+        # Phase progress 0 → 1 during first 55% of opening.
+        p = t / 0.55
+        ease = 1.0 - (1.0 - p) ** 2  # ease-out
+
+        # The ring starts at the gate inner radius and expands outward *and*
+        # appears to move toward the viewer via perspective scaling.
+        # We compress the Y axis to simulate it tilting toward horizontal.
+        cx, cy = self.gate_center
+        base_r = self.gate_inner_radius
+        ring_r = int(base_r * (0.5 + ease * 1.4))     # expands as it approaches
+        # Tilt factor: at p=0 it's flat (fully compressed), at p=1 it's round.
+        y_scale = 0.08 + ease * 0.92
+        alpha = int(220 * (1.0 - p) ** 1.2)
+        ring_w = max(2, int(base_r * 0.08 * (1.0 - p * 0.5)))
+        color_b = 255
+        color_r = int(180 * (1.0 - ease * 0.7))
+        color_g = int(220 * (1.0 - ease * 0.5))
+
+        surf = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        # Draw as an ellipse with compressed Y.
+        ry = max(1, int(ring_r * y_scale))
+        rect = pygame.Rect(cx - ring_r, cy - ry, ring_r * 2, ry * 2)
+        pygame.draw.ellipse(surf, (color_r, color_g, color_b, alpha), rect, ring_w)
+        # Secondary halo ring slightly larger.
+        halo_rect = rect.inflate(ring_w * 4, int(ring_w * 4 * y_scale))
+        pygame.draw.ellipse(surf, (color_r, color_g, color_b, alpha // 3), halo_rect, max(1, ring_w // 2))
+        self.screen.blit(surf, (0, 0))
 
     def _draw_idc_prompt(self) -> None:
         """Small banner below the gate prompting for IDC digits."""
