@@ -688,6 +688,14 @@ class StargateApp:
         w = int(self.settings["window_width"])
         h = int(self.settings["window_height"])
         self.screen = pygame.display.set_mode((w, h), pygame.RESIZABLE)
+        # Maximise on startup via the Win32 API (no-op on other platforms).
+        try:
+            import ctypes
+            hwnd = pygame.display.get_wm_info().get("window")
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE = 3
+        except Exception:
+            pass
         pygame.display.set_caption("Stargate Dialing Computer + DHD")
         self.clock = pygame.time.Clock()
 
