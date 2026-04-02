@@ -1,0 +1,11 @@
+{
+  "window_width": 1920,
+  "window_height": 1009,
+  "volume_master": 1.0,
+  "volume_ambient": 1.0,
+  "dialing_speed_multiplier": 1.0,
+  "dial_fail_chance": 0.35,
+  "idc_code": "314",
+  "screensaver_idle_seconds": 60,
+  "sound_pack_dir": ""
+}
